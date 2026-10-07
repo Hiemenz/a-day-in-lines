@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+preview/
+breakdown/
+current.png
+frame.png
+.DS_Store

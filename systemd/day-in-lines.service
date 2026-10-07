@@ -1,0 +1,12 @@
+[Unit]
+Description=A Day in Lines
+After=network-online.target
+
+[Service]
+User=pi
+Environment=PYTHONPATH=/home/pi/e-Paper/RaspberryPi_JetsonNano/python/lib
+ExecStart=/usr/bin/python3 /home/pi/a-day-in-lines/a_day_in_lines.py --image /home/pi/pictures run --display waveshare:epd7in5_V2 --serve 8080
+Restart=always
+
+[Install]
+WantedBy=multi-user.target

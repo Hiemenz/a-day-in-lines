@@ -1,0 +1,784 @@
+<title>A Day in Lines</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500&display=swap">
+<style>
+/* Layout: a drafting desk. The paper is the stage; the exposure sheet (X-sheet) logs every line added. */
+:root {
+  --desk: #e4e6ea;
+  --desk-2: #d6d9df;
+  --ink: #1f2228;
+  --muted: #5d6370;
+  --rule: #c3c7cf;
+  --blue: #2f6fd6;          /* col-erase blue: the animator's construction pencil */
+  --blue-soft: rgba(47,111,214,.12);
+  --paper-edge: rgba(20,24,32,.18);
+  --ph-c: #9fb4d9; --ph-l: #6f7d96; --ph-s: #3f4656; --ph-f: #1c2029;
+  --display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --desk: #16181d; --desk-2: #20232a; --ink: #e8eaee; --muted: #9aa1ad; --rule: #2e323a;
+  --blue: #6ea2ff; --blue-soft: rgba(110,162,255,.14); --paper-edge: rgba(0,0,0,.6);
+  --ph-c: #3c5180; --ph-l: #5a6782; --ph-s: #8a93a6; --ph-f: #c9ced8; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --desk: #16181d; --desk-2: #20232a; --ink: #e8eaee; --muted: #9aa1ad; --rule: #2e323a;
+  --blue: #6ea2ff; --blue-soft: rgba(110,162,255,.14); --paper-edge: rgba(0,0,0,.6);
+  --ph-c: #3c5180; --ph-l: #5a6782; --ph-s: #8a93a6; --ph-f: #c9ced8; color-scheme: dark }
+
+* { box-sizing: border-box }
+body { background: var(--desk); color: var(--ink); font-family: var(--body); font-size: 15px; line-height: 1.45 }
+.wrap { max-width: 1240px; margin: 0 auto; padding-inline: 16px; padding-block: 20px 32px;
+  display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 20px 28px; align-items: start }
+header { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 20px }
+h1 { font-family: var(--display); font-weight: 700; font-size: clamp(26px, 4vw, 38px); letter-spacing: -.02em; margin: 0; text-wrap: balance }
+.sub { color: var(--muted); margin: 2px 0 0; font-size: 14px }
+.clock { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right }
+.clock .t { font-size: clamp(26px, 4vw, 36px); font-weight: 500; letter-spacing: -.01em }
+.clock .m { color: var(--muted); font-size: 12px; letter-spacing: .06em; text-transform: uppercase }
+
+.stage { min-width: 0; display: grid; gap: 14px }
+.sheet { position: relative; aspect-ratio: 5 / 3; max-width: 100%; box-shadow: 0 1px 2px var(--paper-edge), 0 10px 30px var(--paper-edge); background: #f6f2e7 }
+.sheet canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block }
+
+.now { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; min-height: 24px }
+.now .lab { font-weight: 500 }
+.chip { font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; padding: 2px 8px; border-radius: 3px; background: var(--blue-soft); color: var(--blue) }
+.now .n { color: var(--muted); font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums }
+
+.controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center }
+button, select { font: 500 14px var(--body); color: var(--ink); background: var(--desk-2); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 12px; cursor: pointer }
+button:hover { border-color: var(--muted) }
+button:focus-visible, select:focus-visible, input:focus-visible, .row:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px }
+#play { background: var(--ink); color: var(--desk); border-color: var(--ink); min-width: 86px }
+.toggle { display: flex; gap: 6px; align-items: center; font-size: 14px; color: var(--muted); cursor: pointer }
+.toggle input { accent-color: var(--blue) }
+.spacer { flex: 1 }
+.load { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 14px; border: 1px dashed var(--rule); border-radius: 8px; background: var(--desk-2) }
+.load.drag { border-color: var(--blue); background: var(--blue-soft) }
+.load p { margin: 0; font-size: 13px; color: var(--muted); flex: 1 1 220px; min-width: 0 }
+#pick, #send { background: var(--blue); color: #fff; border-color: var(--blue) }
+#sendbar { display: inline-flex; flex-wrap: wrap; gap: 10px }
+#sendbar[hidden] { display: none }
+.live { color: var(--blue); font-weight: 500 }
+#file { position: absolute; width: 1px; height: 1px; opacity: 0 }
+.busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(246,242,231,.82); color: #2a2c31; font: 500 14px var(--mono); text-align: center; padding: 16px }
+.busy span { display: block; margin-top: 6px; color: #6b6f78; font-weight: 400; font-size: 12px }
+
+.scrub { display: grid; gap: 6px }
+#k { width: 100%; accent-color: var(--blue) }
+.phases { display: flex; height: 8px; border-radius: 2px; overflow: hidden }
+.phases span { display: block; height: 100% }
+.ticks { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 12px; color: var(--muted) }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px }
+
+aside { min-width: 0; border: 1px solid var(--rule); border-radius: 8px; background: var(--desk-2); overflow: hidden }
+aside h2 { font: 700 13px var(--display); letter-spacing: .08em; text-transform: uppercase; margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--rule); display: flex; justify-content: space-between }
+aside h2 small { font: 400 11px var(--mono); color: var(--muted); letter-spacing: .04em; text-transform: none }
+.xhead, .row { display: grid; grid-template-columns: 42px 48px minmax(0,1fr) 34px; gap: 8px; padding: 6px 14px; font-variant-numeric: tabular-nums }
+.xhead { font: 500 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--rule) }
+#xsheet { max-height: 560px; overflow-y: auto }
+.row { font-size: 13px; border-bottom: 1px solid var(--rule); cursor: pointer; align-items: baseline }
+.row .f, .row .tm, .row .c { font-family: var(--mono); font-size: 12px; color: var(--muted) }
+.row .c { text-align: right }
+.row .a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap }
+.row.done .a { color: var(--muted) }
+.row.cur { background: var(--blue-soft) }
+.row.cur .a, .row.cur .f { color: var(--blue); font-weight: 500 }
+.row .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 7px; vertical-align: 1px }
+
+@media (max-width: 880px) {
+  .wrap { grid-template-columns: minmax(0, 1fr) }
+  #xsheet { max-height: 340px }
+  .clock { text-align: left }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>A Day in Lines</h1>
+      <p class="sub" id="sub">Any image, broken into 720 drawing events: one is added to the e-ink sheet each minute from 7:00 to 19:00.</p>
+    </div>
+    <div class="clock"><div class="t" id="clock">07:00</div><div class="m" id="minute">blank sheet</div></div>
+  </header>
+
+  <section class="stage">
+    <div class="sheet"><canvas id="cv" width="1600" height="960" aria-label="The drawing as it stands at the selected minute"></canvas><div class="busy" id="busy" hidden></div></div>
+
+    <div class="load" id="drop">
+      <button id="pick">Use your own image</button>
+      <input type="file" id="file" accept="image/*">
+      <select id="fit" aria-label="How the image fits the 800 by 480 sheet">
+        <option value="crop">Fill the sheet (crop)</option>
+        <option value="pad">Whole image (margins)</option>
+      </select>
+      <span id="sendbar" hidden>
+        <select id="when" aria-label="When the display starts drawing it"></select>
+        <button id="send">Send to display</button>
+      </span>
+      <p id="srcnote">Showing the sample tanker sketch. Pick or drop any photo or drawing and it is broken into 720 minutes of lines here, in your browser.</p>
+    </div>
+
+    <div class="now" aria-live="polite">
+      <span class="chip" id="phase">Blank</span>
+      <span class="lab" id="label">Off-white animation paper, peg holes only</span>
+      <span class="n" id="count"></span>
+    </div>
+
+    <div class="scrub">
+      <input type="range" id="k" min="0" max="720" value="0" aria-label="Minute of the drawing day">
+      <div class="phases" id="phases"></div>
+      <div class="ticks" id="ticks"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <div class="controls">
+      <button id="nowbtn" hidden>Now on display</button>
+      <button id="prev" aria-label="Previous minute">&#8592; Minute</button>
+      <button id="play">Play</button>
+      <button id="next" aria-label="Next minute">Minute &#8594;</button>
+      <select id="speed" aria-label="Playback speed">
+        <option value="900">1 min / 0.9 s</option>
+        <option value="350" selected>1 min / 0.35 s</option>
+        <option value="90">1 min / 0.09 s</option>
+      </select>
+      <span class="spacer"></span>
+      <label class="toggle"><input type="checkbox" id="hl" checked> Show new lines in blue</label>
+    </div>
+  </section>
+
+  <aside>
+    <h2>Exposure sheet <small id="xs-sum"></small></h2>
+    <div class="xhead"><span>Min</span><span>Time</span><span>Lines added</span><span style="text-align:right">Str.</span></div>
+    <div id="xsheet" role="list"></div>
+  </aside>
+</div>
+
+<script>
+const SAMPLE = /*PLAN*/[];
+const LIVE = /*LIVE*/null;
+const BASE = LIVE ? LIVE.startMin : 7 * 60;
+const PH = { c: "Composition", l: "Linework", s: "Shading", f: "Finishing" };
+const PHV = { c: "--ph-c", l: "--ph-l", s: "--ph-s", f: "--ph-f" };
+const N = 720, CW = 1600, CH = 960, W = 800, H = 480;
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+let PLAN = [];
+
+// sample plan comes delta-encoded at 2x scale
+function decodeSample(raw) {
+  return raw.map(e => [e[0], e[1], e[2].map(([p, w, t, f]) => {
+    const n = f.length / 2, pts = new Float32Array(f.length);
+    let x = f[0], y = f[1]; pts[0] = x; pts[1] = y;
+    for (let i = 1; i < n; i++) { x += f[2 * i]; y += f[2 * i + 1]; pts[2 * i] = x; pts[2 * i + 1] = y; }
+    return [p, w, t, pts];
+  })]);
+}
+
+/* =====================================================================
+   Breakdown engine: image -> 720 minutes of pencil strokes
+   (a port of a_day_in_lines.py's planner)
+   ===================================================================== */
+function mulberry(seed) { return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+function Rng(seed) {
+  const r = mulberry(seed);
+  return { random: r, uni: (a, b) => a + (b - a) * r(), norm: (m = 0, s = 1) => m + s * Math.sqrt(-2 * Math.log(1 - r())) * Math.cos(2 * Math.PI * r()) };
+}
+const len = pts => { let L = 0; for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]); return L; };
+function resample(pts, step) {
+  if (pts.length < 2) return [pts[0], pts[0]];
+  const cum = [0]; for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
+  const L = cum[cum.length - 1]; if (L < 1e-6) return [pts[0], pts[0]];
+  const n = Math.max(2, Math.floor(L / step) + 1), out = []; let j = 0;
+  for (let i = 0; i < n; i++) {
+    const s = L * i / (n - 1); while (j < cum.length - 2 && cum[j + 1] < s) j++;
+    const f = (s - cum[j]) / Math.max(1e-9, cum[j + 1] - cum[j]);
+    out.push([pts[j][0] + (pts[j + 1][0] - pts[j][0]) * f, pts[j][1] + (pts[j + 1][1] - pts[j][1]) * f]);
+  }
+  return out;
+}
+function Pen(rng) {
+  function wobble(pts, amp) {
+    const p = resample(pts, 2), n = p.length;
+    if (n < 3 || amp <= 0) return p;
+    const L = len(p), off = new Float32Array(n);
+    for (let k = 0; k < 3; k++) {
+      const cyc = L / rng.uni(35, 140), a = rng.norm(0, amp / 2), ph = rng.random();
+      for (let i = 0; i < n; i++) off[i] += a * Math.sin(2 * Math.PI * (cyc * i / (n - 1) + ph));
+    }
+    return p.map((q, i) => {
+      const a = p[Math.max(0, i - 1)], b = p[Math.min(n - 1, i + 1)];
+      let tx = b[0] - a[0], ty = b[1] - a[1]; const m = Math.hypot(tx, ty) + 1e-9; tx /= m; ty /= m;
+      return [q[0] - ty * off[i], q[1] + tx * off[i]];
+    });
+  }
+  return {
+    line(pts, { p = .5, w = 1, wob = .5, over = 0, taper = true, jitter = 0 } = {}) {
+      if (pts.length < 2) return [];
+      pts = pts.map(q => jitter ? [q[0] + rng.norm(0, jitter), q[1] + rng.norm(0, jitter)] : q.slice());
+      if (over) {
+        const n = pts.length;
+        let ax = pts[1][0] - pts[0][0], ay = pts[1][1] - pts[0][1], am = Math.hypot(ax, ay) + 1e-9;
+        let bx = pts[n - 1][0] - pts[n - 2][0], by = pts[n - 1][1] - pts[n - 2][1], bm = Math.hypot(bx, by) + 1e-9;
+        const o1 = over * rng.uni(.3, 1.2), o2 = over * rng.uni(.3, 1.2);
+        pts = [[pts[0][0] - ax / am * o1, pts[0][1] - ay / am * o1], ...pts, [pts[n - 1][0] + bx / bm * o2, pts[n - 1][1] + by / bm * o2]];
+      }
+      const q = wobble(pts, wob);
+      if (len(q) < 2) return [];
+      const f = new Float32Array(q.length * 2);
+      q.forEach((v, i) => { f[2 * i] = v[0] * 2; f[2 * i + 1] = v[1] * 2; });
+      return [[Math.min(1, Math.max(0, p * rng.uni(.9, 1.1))), w, taper ? 1 : 0, f]];
+    }
+  };
+}
+
+// ---- image processing on Float32Array(W*H) ----
+function gauss(src, sigma) {
+  if (sigma <= 0) return src.slice();
+  const r = Math.ceil(sigma * 3), k = new Float32Array(2 * r + 1); let s = 0;
+  for (let i = -r; i <= r; i++) { k[i + r] = Math.exp(-i * i / (2 * sigma * sigma)); s += k[i + r]; }
+  for (let i = 0; i < k.length; i++) k[i] /= s;
+  const tmp = new Float32Array(W * H), out = new Float32Array(W * H);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let a = 0; for (let i = -r; i <= r; i++) { const xx = x + i < 0 ? 0 : x + i >= W ? W - 1 : x + i; a += src[y * W + xx] * k[i + r]; }
+    tmp[y * W + x] = a;
+  }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    let a = 0; for (let i = -r; i <= r; i++) { const yy = y + i < 0 ? 0 : y + i >= H ? H - 1 : y + i; a += tmp[yy * W + x] * k[i + r]; }
+    out[y * W + x] = a;
+  }
+  return out;
+}
+function sobel(g) {
+  const gx = new Float32Array(W * H), gy = new Float32Array(W * H);
+  const at = (x, y) => g[(y < 0 ? 0 : y >= H ? H - 1 : y) * W + (x < 0 ? 0 : x >= W ? W - 1 : x)];
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    gx[y * W + x] = (at(x + 1, y - 1) + 2 * at(x + 1, y) + at(x + 1, y + 1)) - (at(x - 1, y - 1) + 2 * at(x - 1, y) + at(x - 1, y + 1));
+    gy[y * W + x] = (at(x - 1, y + 1) + 2 * at(x, y + 1) + at(x + 1, y + 1)) - (at(x - 1, y - 1) + 2 * at(x, y - 1) + at(x + 1, y - 1));
+  }
+  return [gx, gy];
+}
+function pct(arr, q) { const a = Float32Array.from(arr).sort(); return a.length ? a[Math.min(a.length - 1, Math.floor(q / 100 * (a.length - 1)))] : 0; }
+const NB = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [-1, 1], [1, -1], [1, 1]];
+function canny(gray, sigma, lo, hi) {
+  const [gx, gy] = sobel(gauss(gray, sigma)), mag = new Float32Array(W * H), nms = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) mag[i] = Math.hypot(gx[i], gy[i]);
+  const D = [[0, 1], [1, 1], [1, 0], [1, -1]];
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x, ang = ((Math.atan2(gy[i], gx[i]) * 180 / Math.PI) + 180) % 180, q = Math.floor((ang + 22.5) / 45) % 4;
+    const [dy, dx] = D[q];
+    if (mag[i] >= mag[(y - dy) * W + x - dx] && mag[i] >= mag[(y + dy) * W + x + dx]) nms[i] = mag[i];
+  }
+  const nz = []; for (let i = 0; i < W * H; i++) if (nms[i] > 0) nz.push(nms[i]);
+  const e = new Uint8Array(W * H); if (!nz.length) return { e, mag };
+  const HI = pct(nz, hi), LO = pct(nz, lo), st = [];
+  for (let i = 0; i < W * H; i++) if (nms[i] > HI) { e[i] = 1; st.push(i); }
+  while (st.length) {
+    const i = st.pop(), x = i % W, y = (i / W) | 0;
+    for (const [dy, dx] of NB) { const yy = y + dy, xx = x + dx; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const j = yy * W + xx; if (!e[j] && nms[j] > LO) { e[j] = 1; st.push(j); } }
+  }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (x < 2 || y < 2 || x >= W - 2 || y >= H - 2) e[y * W + x] = 0;
+  return { e, mag };
+}
+function trace(e) {
+  const deg = new Uint8Array(W * H), seen = new Uint8Array(W * H), ends = [], rest = [], paths = [];
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x; if (!e[i]) continue;
+    let d = 0; for (const [dy, dx] of NB) d += e[(y + dy) * W + x + dx]; deg[i] = d;
+    (d === 1 ? ends : rest).push(i);
+  }
+  for (const s of ends.concat(rest)) {
+    if (seen[s]) continue;
+    let x = s % W, y = (s / W) | 0; const path = [[x, y]]; seen[s] = 1;
+    for (;;) {
+      let nx = -1, ny = -1;
+      for (const [dy, dx] of NB) { const j = (y + dy) * W + x + dx; if (e[j] && !seen[j]) { nx = x + dx; ny = y + dy; break; } }
+      if (nx < 0) break; x = nx; y = ny; seen[y * W + x] = 1; path.push([x, y]);
+    }
+    if (path.length >= 4) paths.push(path);
+  }
+  return paths;
+}
+function smooth(p, k) {
+  if (p.length < k + 2) return p;
+  const h = k >> 1;
+  return p.map((_, i) => { let sx = 0, sy = 0; for (let j = -h; j <= h; j++) { const q = p[Math.max(0, Math.min(p.length - 1, i + j))]; sx += q[0]; sy += q[1]; } return [sx / k, sy / k]; });
+}
+function splitLong(p, maxlen, rng) {
+  const out = []; let cur = [p[0]], run = 0, lim = maxlen * rng.uni(.7, 1.2);
+  for (let i = 1; i < p.length; i++) {
+    run += Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]); cur.push(p[i]);
+    if (run > lim) { out.push(cur); cur = [p[i]]; run = 0; lim = maxlen * rng.uni(.7, 1.2); }
+  }
+  if (cur.length > 2) out.push(cur);
+  return out;
+}
+const sampleMean = (img, pts) => { let s = 0; for (const [x, y] of pts) s += img[Math.min(H - 1, Math.max(0, Math.round(y))) * W + Math.min(W - 1, Math.max(0, Math.round(x)))]; return s / pts.length; };
+function contourPaths(gray, tone, sigma, lo, hi, minlen, maxlen, rng) {
+  const { e, mag } = canny(gray, sigma, lo, hi), out = [];
+  for (let p of trace(e)) {
+    p = smooth(p, sigma > 2 ? 5 : 3);
+    if (len(p) < minlen) continue;
+    for (const piece of splitLong(p, maxlen, rng)) if (len(piece) >= minlen * .6)
+      out.push({ pts: piece, score: len(piece) * sampleMean(mag, piece), dark: sampleMean(tone, piece) });
+  }
+  return { paths: out, e };
+}
+function minmax(src, size, isMax) {
+  const r = size >> 1, t = new Float32Array(W * H), o = new Float32Array(W * H);
+  const f = isMax ? Math.max : Math.min;
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let v = src[y * W + x]; for (let i = -r; i <= r; i++) { const xx = x + i; if (xx >= 0 && xx < W) v = f(v, src[y * W + xx]); } t[y * W + x] = v; }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { let v = t[y * W + x]; for (let i = -r; i <= r; i++) { const yy = y + i; if (yy >= 0 && yy < H) v = f(v, t[yy * W + x]); } o[y * W + x] = v; }
+  return o;
+}
+function binMorph(m, iters, dilate) {
+  let cur = m;
+  for (let k = 0; k < iters; k++) {
+    const o = new Uint8Array(W * H);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      let v = dilate ? 0 : 1;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const yy = y + dy, xx = x + dx, b = (xx < 0 || yy < 0 || xx >= W || yy >= H) ? 0 : cur[yy * W + xx];
+        if (dilate && b) v = 1; if (!dilate && !b) v = 0;
+      }
+      o[y * W + x] = v;
+    }
+    cur = o;
+  }
+  return cur;
+}
+function dropSmall(m, minArea) {
+  const lab = new Int32Array(W * H), out = new Uint8Array(W * H); let id = 0;
+  for (let s = 0; s < W * H; s++) {
+    if (!m[s] || lab[s]) continue;
+    id++; const comp = [s], st = [s]; lab[s] = id;
+    while (st.length) { const i = st.pop(), x = i % W, y = (i / W) | 0; for (const [dy, dx] of NB) { const yy = y + dy, xx = x + dx; if (xx < 0 || yy < 0 || xx >= W || yy >= H) continue; const j = yy * W + xx; if (m[j] && !lab[j]) { lab[j] = id; st.push(j); comp.push(j); } } }
+    if (comp.length >= minArea) for (const i of comp) out[i] = 1;
+  }
+  return out;
+}
+function skeleton(m) {   // Zhang-Suen thinning
+  const s = m.slice(); let changed = true;
+  while (changed) {
+    changed = false;
+    for (let pass = 0; pass < 2; pass++) {
+      const del = [];
+      for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+        const i = y * W + x; if (!s[i]) continue;
+        const P = [s[i - W], s[i - W + 1], s[i + 1], s[i + W + 1], s[i + W], s[i + W - 1], s[i - 1], s[i - W - 1]];
+        const B = P.reduce((a, b) => a + b, 0); if (B < 2 || B > 6) continue;
+        let A = 0; for (let k = 0; k < 8; k++) if (!P[k] && P[(k + 1) % 8]) A++; if (A !== 1) continue;
+        if (pass === 0 ? (P[0] * P[2] * P[4] || P[2] * P[4] * P[6]) : (P[0] * P[2] * P[6] || P[0] * P[4] * P[6])) continue;
+        del.push(i);
+      }
+      for (const i of del) s[i] = 0; if (del.length) changed = true;
+    }
+  }
+  return s;
+}
+function ridgePaths(gray, tone, rng) {
+  const g = gauss(gray, .7), dark = new Float32Array(W * H); for (let i = 0; i < W * H; i++) dark[i] = 1 - g[i];
+  const open = minmax(minmax(dark, 7, false), 7, true), th = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) th[i] = dark[i] - open[i];
+  const t1 = pct(th, 96.5), t2 = pct(th, 99.3);
+  let m = new Uint8Array(W * H); for (let i = 0; i < W * H; i++) m[i] = th[i] > t1 && tone[i] > .2 ? 1 : 0;
+  m = dropSmall(m, 12);
+  for (let i = 0; i < W * H; i++) if (th[i] > t2) m[i] = 1;
+  const sk = skeleton(m), out = [];
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (x < 2 || y < 2 || x >= W - 2 || y >= H - 2) sk[y * W + x] = 0;
+  for (let p of trace(sk)) {
+    p = smooth(p, 3); if (len(p) < 8) continue;
+    for (const piece of splitLong(p, 70, rng)) if (len(piece) >= 5)
+      out.push({ pts: piece, score: len(piece) * sampleMean(th, piece) * 40, dark: sampleMean(tone, piece) });
+  }
+  return out;
+}
+function orientation(gray) {
+  const [gx, gy] = sobel(gauss(gray, 1.5)), a = new Float32Array(W * H), b = new Float32Array(W * H), c = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) { a[i] = gx[i] * gx[i]; b[i] = gy[i] * gy[i]; c[i] = gx[i] * gy[i]; }
+  const jxx = gauss(a, 6), jyy = gauss(b, 6), jxy = gauss(c, 6), theta = new Float32Array(W * H), coh = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    theta[i] = 0.5 * Math.atan2(2 * jxy[i], jxx[i] - jyy[i]) * 180 / Math.PI + 90;
+    coh[i] = Math.sqrt((jxx[i] - jyy[i]) ** 2 + 4 * jxy[i] ** 2) / (jxx[i] + jyy[i] + 1e-9);
+  }
+  return { theta, coh };
+}
+function groupPaths(paths, budget, radius) {
+  let rem = paths.slice().sort((a, b) => b.score - a.score);
+  const mid = p => p.pts[p.pts.length >> 1], groups = [];
+  while (rem.length) {
+    const seed = rem.shift(), grp = [seed]; let tot = len(seed.pts);
+    if (tot < budget) {
+      const c = mid(seed);
+      const near = rem.map(p => [Math.hypot(mid(p)[0] - c[0], mid(p)[1] - c[1]), p]).filter(d => d[0] <= radius).sort((a, b) => a[0] - b[0]);
+      for (const [, p] of near) { if (tot >= budget) break; grp.push(p); tot += len(p.pts); }
+      const used = new Set(grp); rem = rem.filter(p => !used.has(p));
+    }
+    groups.push(grp);
+  }
+  return groups;
+}
+function hatchLayer(pen, rng, mask, ori, angle, spc, pr, maxlen, follow, cell) {
+  const a = angle * Math.PI / 180, d = [Math.cos(a), Math.sin(a)], n = [-d[1], d[0]], R = Math.hypot(W, H) / 2 + 4, cells = new Map();
+  for (let off = -R + rng.uni(0, spc); off < R; off += spc * rng.uni(.85, 1.15)) {
+    const bx = W / 2 + n[0] * off, by = H / 2 + n[1] * off, steps = Math.ceil(2 * R);
+    let run = [];
+    const flush = () => {
+      if (run.length >= 3) {
+        const k = Math.max(1, Math.ceil(run.length / (maxlen * rng.uni(.75, 1.25)))), sz = Math.ceil(run.length / k);
+        for (let s = 0; s < run.length; s += sz) {
+          const piece = run.slice(s, s + sz); if (piece.length < 3) continue;
+          const m = piece[piece.length >> 1], L = len([piece[0], piece[piece.length - 1]]) + rng.uni(-1, 1.5);
+          const xi = Math.round(m[0]), yi = Math.round(m[1]), j = yi * W + xi;
+          const w = follow * Math.min(1, ori.coh[j] * 2), diff = ((ori.theta[j] - angle + 90) % 180 + 180) % 180 - 90;
+          const aa = (angle + w * diff + rng.norm(0, 3)) * Math.PI / 180, dd = [Math.cos(aa), Math.sin(aa)];
+          const st = pen.line([[m[0] - dd[0] * L / 2, m[1] - dd[1] * L / 2], [m[0] + dd[0] * L / 2, m[1] + dd[1] * L / 2]], { p: pr, w: .9, wob: .3, jitter: .25 });
+          const key = Math.floor(xi / cell) + "," + Math.floor(yi / cell);
+          if (!cells.has(key)) cells.set(key, { cx: Math.floor(xi / cell), cy: Math.floor(yi / cell), s: [] });
+          cells.get(key).s.push(...st);
+        }
+      }
+      run = [];
+    };
+    for (let t = 0; t <= steps; t++) {
+      const x = bx - d[0] * R + d[0] * t, y = by - d[1] * R + d[1] * t;
+      const xi = Math.round(x), yi = Math.round(y);
+      if (xi >= 0 && yi >= 0 && xi < W && yi < H && mask[yi * W + xi]) run.push([x, y]); else flush();
+    }
+    flush();
+  }
+  return [...cells.values()];
+}
+function fit(evs, n) {
+  evs = evs.filter(e => e[2].length);
+  if (!evs.length || n <= 0) return evs.slice(0, Math.max(0, n));
+  while (evs.length < n) {
+    let bi = 0; evs.forEach((e, i) => { if (e[2].length > evs[bi][2].length) bi = i; });
+    const s = evs[bi][2]; if (s.length < 2) break;
+    const h = s.length >> 1; evs.splice(bi, 1, [evs[bi][0], evs[bi][1], s.slice(0, h)], [evs[bi][0], evs[bi][1], s.slice(h)]);
+  }
+  if (evs.length > n) {
+    const out = [];
+    for (let g = 0; g < n; g++) {
+      const a = Math.floor(g * evs.length / n), b = Math.floor((g + 1) * evs.length / n);
+      out.push([evs[a][0], evs[a][1], evs.slice(a, b).flatMap(e => e[2])]);
+    }
+    evs = out;
+  }
+  return evs;
+}
+
+async function buildPlan(gray, seed, progress) {
+  const tick = async (msg, f) => { progress(msg, f); await new Promise(r => setTimeout(r, 16)); };
+  const rng = Rng(seed), pen = Pen(rng);
+  await tick("Reading the tones", .05);
+  const P = pct(gray, 92), I = pct(gray, .7), tone0 = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) tone0[i] = Math.min(1, Math.max(0, (P - gray[i]) / Math.max(P - I, 1e-3)));
+  const tone = gauss(tone0, 1);
+
+  await tick("Blocking in the big shapes", .15);
+  const coarse = contourPaths(gray, tone, 6, 70, 92, 30, 160, rng).paths.sort((a, b) => b.score - a.score).slice(0, 90);
+  const comp = groupPaths(coarse, 150, 70).map(g => ["c", "construction line",
+    g.flatMap(p => pen.line(p.pts.filter((_, i) => i % 3 === 0 || i === p.pts.length - 1), { p: .15 + .08 * p.dark, w: .9, wob: 1.4, over: 7 }))]);
+
+  await tick("Finding contours", .3);
+  const med = contourPaths(gray, tone, 2.6, 72, 93, 14, 110, rng);
+  await tick("Finding fine detail", .42);
+  const fineRaw = contourPaths(gray, tone, 1.3, 80, 95, 10, 70, rng).paths;
+  const near = binMorph(med.e, 2, true);
+  const fine = fineRaw.filter(p => sampleMean(near, p.pts) < .5);
+  await tick("Finding thin lines", .52);
+  const ridges = ridgePaths(gray, tone, rng);
+  const lines = [];
+  for (const [label, pool, pb, budget] of [["contour", med.paths, .4, 120], ["thin line", ridges, .45, 60], ["detail line", fine, .36, 70]])
+    for (const g of groupPaths(pool, budget, 40)) lines.push(["l", label, g.flatMap(p => pen.line(p.pts, { p: pb + .32 * p.dark, w: 1, wob: .45, over: 1.5 }))]);
+
+  await tick("Planning the hatching", .62);
+  const ori = orientation(gray), soft = gauss(tone, 2);
+  const nrng = Rng(seed + 9), noise0 = new Float32Array(W * H); for (let i = 0; i < W * H; i++) noise0[i] = nrng.norm();
+  const noise = gauss(noise0, 6); let sd = 0; for (const v of noise) sd += v * v; sd = Math.sqrt(sd / noise.length) + 1e-9;
+  const layers = [[.12, 4.4, 0, .26, 30, .8], [.20, 4.0, 58, .30, 28, .6], [.34, 3.8, -46, .34, 26, .4], [.48, 3.5, 88, .38, 24, .3],
+                  [.62, 3.3, 22, .44, 22, .3], [.76, 3.1, -20, .5, 20, .3], [.86, 3.0, 70, .62, 16, .2]];
+  const names = ["first tone", "cross-hatching", "third layer", "deepening", "dark masses", "deep shadow", "darkest accent"];
+  const shade = [], accent = [];
+  for (let li = 0; li < layers.length; li++) {
+    await tick(`Hatching layer ${li + 1} of ${layers.length}`, .65 + .3 * li / layers.length);
+    const [thr, spc, aoff, pr, maxlen, follow] = layers[li];
+    let mask = new Uint8Array(W * H); for (let i = 0; i < W * H; i++) mask[i] = soft[i] > thr + noise[i] / sd * .035 ? 1 : 0;
+    mask = dropSmall(binMorph(binMorph(mask, 2, false), 2, true), 150);
+    const cells = hatchLayer(pen, rng, mask, ori, 50 + aoff, spc, pr, maxlen, follow, 40);
+    cells.sort((a, b) => Math.floor(a.cy / 3) - Math.floor(b.cy / 3) || a.cx - b.cx || a.cy - b.cy);
+    const last = li === layers.length - 1;
+    for (const c of cells) if (c.s.length) (last ? accent : shade).push([last ? "f" : "s", names[li], c.s]);
+  }
+  const darkest = med.paths.concat(fine, ridges).sort((a, b) => (b.dark * 2 + b.score / 4000) - (a.dark * 2 + a.score / 4000)).slice(0, 40);
+  for (const g of groupPaths(darkest, 90, 50)) accent.push(["f", "accent line", g.flatMap(p => pen.line(p.pts, { p: .82, w: 1.15, wob: .35 }))]);
+  for (let i = 0; i < Math.min(6, coarse.length); i++) {
+    const p = coarse[Math.floor(rng.random() * coarse.length)], dx = rng.norm(0, 1.5), dy = rng.norm(0, 1.5);
+    accent.push(["f", "restated construction", pen.line(p.pts.filter((_, j) => j % 3 === 0).map(q => [q[0] + dx, q[1] + dy]), { p: .2, wob: 1.6, over: 6 })]);
+  }
+  for (let i = accent.length - 1; i > 0; i--) { const j = Math.floor(rng.random() * (i + 1)); [accent[i], accent[j]] = [accent[j], accent[i]]; }
+
+  await tick("Fitting it into 720 minutes", .97);
+  const C = fit(comp, 40), L = fit(lines, 230), F = fit(accent, 50), S = fit(shade, N - C.length - L.length - F.length);
+  const evs = [...C, ...L, ...S, ...F];
+  while (evs.length < N) evs.push(["f", "pause", []]);
+  return evs.slice(0, N);
+}
+
+function imageToGray(img, mode) {
+  const c = document.createElement("canvas"); c.width = W; c.height = H;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  g.fillStyle = "#fff"; g.fillRect(0, 0, W, H);
+  const s = mode === "pad" ? Math.min(W / img.width, H / img.height) : Math.max(W / img.width, H / img.height);
+  const w = img.width * s, h = img.height * s;
+  g.imageSmoothingQuality = "high";
+  g.drawImage(img, (W - w) / 2, (H - h) / 2, w, h);
+  const d = g.getImageData(0, 0, W, H).data, out = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) out[i] = (0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2]) / 255;
+  return out;
+}
+
+/* =====================================================================
+   The sheet
+   ===================================================================== */
+const mk = () => { const c = document.createElement("canvas"); c.width = CW; c.height = CH; return c; };
+const layer = mk(), lx = layer.getContext("2d");
+const blue = mk(), bx = blue.getContext("2d");
+const tmp = mk(), tx = tmp.getContext("2d");
+const view = $("cv"), vx = view.getContext("2d");
+const paper = mk(), px = paper.getContext("2d");
+(function () {
+  px.fillStyle = "#f6f2e7"; px.fillRect(0, 0, CW, CH);
+  const im = px.getImageData(0, 0, CW, CH), d = im.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (Math.random() - .5) * 9; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  px.putImageData(im, 0, 0);
+})();
+const grainTile = document.createElement("canvas"); grainTile.width = grainTile.height = 256;
+(function () {
+  const g = grainTile.getContext("2d"), im = g.createImageData(256, 256), d = im.data;
+  for (let i = 0; i < d.length; i += 4) d[i + 3] = Math.random() < .5 ? Math.random() * 120 : 0;
+  g.putImageData(im, 0, 0);
+})();
+const grain = tx.createPattern(grainTile, "repeat");
+
+function stroke(ctx, s, color, boost) {
+  const [p, w, taper, pts] = s, n = pts.length / 2;
+  ctx.strokeStyle = color; ctx.lineCap = "round";
+  for (let i = 0; i < n - 1; i++) {
+    const t = i / (n - 1);
+    const tp = taper ? .3 + .7 * Math.sqrt(Math.max(0, Math.min(1, Math.min(t, 1 - t) / .14))) : 1;
+    ctx.globalAlpha = Math.min(.95, p * tp * .9 * boost);
+    ctx.lineWidth = w * 2.3 * (.7 + .3 * tp);
+    ctx.beginPath(); ctx.moveTo(pts[2 * i], pts[2 * i + 1]); ctx.lineTo(pts[2 * i + 2], pts[2 * i + 3]); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}
+function pegs(ctx) {
+  ctx.strokeStyle = "#3a3d44"; ctx.globalAlpha = .18; ctx.lineWidth = 1.6;
+  for (const [cx, rx] of [[800, 14], [704, 20], [896, 20]]) { ctx.beginPath(); ctx.ellipse(cx, 936, rx, 6.4, 0, 0, 7); ctx.stroke(); }
+  ctx.globalAlpha = 1;
+}
+
+let k = 0, snaps = {};
+const SNAP = [180, 360, 540], GRAPHITE = "#2a2c31";
+function drawEvent(i) { for (const s of PLAN[i][2]) stroke(lx, s, GRAPHITE, 1); }
+function keepSnap(m) { if (SNAP.includes(m) && !snaps[m]) { const c = mk(); c.getContext("2d").drawImage(layer, 0, 0); snaps[m] = c; } }
+function rebuild(target) {
+  let start = 0; for (const m of SNAP) if (m <= target && snaps[m]) start = m;
+  lx.clearRect(0, 0, CW, CH); if (start) lx.drawImage(snaps[start], 0, 0);
+  for (let i = start; i < target; i++) { drawEvent(i); keepSnap(i + 1); }
+  k = target;
+}
+function advanceTo(target) { if (target < k) return rebuild(target); for (let i = k; i < target; i++) { drawEvent(i); keepSnap(i + 1); } k = target; }
+function present() {
+  vx.globalCompositeOperation = "source-over"; vx.drawImage(paper, 0, 0);
+  tx.globalCompositeOperation = "source-over"; tx.clearRect(0, 0, CW, CH); tx.drawImage(layer, 0, 0);
+  tx.globalCompositeOperation = "destination-out"; tx.fillStyle = grain; tx.fillRect(0, 0, CW, CH);
+  vx.globalCompositeOperation = "multiply"; vx.drawImage(tmp, 0, 0);
+  vx.globalCompositeOperation = "source-over"; pegs(vx);
+  if ($("hl").checked) vx.drawImage(blue, 0, 0);
+}
+function highlight(i, upto) {
+  bx.clearRect(0, 0, CW, CH); if (i < 0) return;
+  const ss = PLAN[i][2], m = upto ?? ss.length, col = css("--blue") || "#2f6fd6";
+  for (let j = 0; j < m; j++) stroke(bx, ss[j], col, 1.6);
+}
+const hhmm = m => { const t = (BASE + m) % 1440; return String(Math.floor(t / 60)).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0"); };
+const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+function label(m) {
+  $("clock").textContent = hhmm(m);
+  $("minute").textContent = m ? `minute ${m} of ${N}` : "blank sheet";
+  if (!m) { $("phase").textContent = "Blank"; $("label").textContent = "Off-white animation paper, peg holes only"; $("count").textContent = ""; }
+  else { const e = PLAN[m - 1], n = e[2].length; $("phase").textContent = PH[e[0]]; $("label").textContent = cap(e[1]); $("count").textContent = `+${n} stroke${n === 1 ? "" : "s"}`; }
+  $("k").value = m; markRow(m);
+}
+function show(m) { stopAnim(); advanceTo(m); highlight(m - 1); present(); label(m); }
+
+let anim = null;
+function stopAnim() { if (anim) { cancelAnimationFrame(anim.raf); anim.done(); anim = null; } }
+function drawMinute(m, dur, then) {
+  stopAnim(); if (m < 1 || m > N) return;
+  advanceTo(m - 1);
+  const ss = PLAN[m - 1][2], t0 = performance.now(); let drawn = 0;
+  label(m);
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const finish = () => { for (; drawn < ss.length; drawn++) stroke(lx, ss[drawn], GRAPHITE, 1); k = m; keepSnap(m); };
+  const step = now => {
+    const f = reduce ? 1 : Math.min(1, (now - t0) / dur), want = Math.ceil(f * ss.length);
+    for (; drawn < want; drawn++) stroke(lx, ss[drawn], GRAPHITE, 1);
+    highlight(m - 1, drawn); present();
+    if (f < 1) anim.raf = requestAnimationFrame(step); else { finish(); anim = null; then && then(); }
+  };
+  anim = { raf: requestAnimationFrame(step), done: finish };
+}
+let playing = false;
+function play() {
+  if (k >= N) show(0);
+  playing = true; $("play").textContent = "Pause";
+  const next = () => { if (!playing) return; if (k >= N) return pause(); const d = +$("speed").value; drawMinute(k + 1, d * .8, () => setTimeout(next, d * .2)); };
+  next();
+}
+function pause() { playing = false; $("play").textContent = "Play"; }
+$("play").onclick = () => playing ? pause() : play();
+$("next").onclick = () => { pause(); stopAnim(); if (k < N) drawMinute(k + 1, 600); };
+$("prev").onclick = () => { pause(); show(Math.max(0, k - 1)); };
+let pending = null;
+$("k").oninput = e => { pause(); pending = +e.target.value; requestAnimationFrame(() => { if (pending !== null) { show(pending); pending = null; } }); };
+$("hl").onchange = () => present();
+document.addEventListener("keydown", e => {
+  if (["INPUT", "SELECT", "BUTTON"].includes(e.target.tagName) && e.key === " ") return;
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.key === "ArrowRight") $("next").click(); else if (e.key === "ArrowLeft") $("prev").click();
+  else if (e.key === " ") { e.preventDefault(); $("play").click(); }
+});
+
+let curRow = null;
+function buildMeta() {
+  $("phases").innerHTML = ""; $("legend").innerHTML = ""; $("xsheet").innerHTML = ""; curRow = null;
+  const counts = {}; for (const e of PLAN) counts[e[0]] = (counts[e[0]] || 0) + 1;
+  for (const p of ["c", "l", "s", "f"]) {
+    if (!counts[p]) continue;
+    const s = document.createElement("span"); s.style.width = (counts[p] / N * 100) + "%"; s.style.background = `var(${PHV[p]})`; s.title = PH[p]; $("phases").append(s);
+    const l = document.createElement("span"); l.innerHTML = `<i style="background:var(${PHV[p]})"></i>${PH[p]} · ${counts[p]} min`; $("legend").append(l);
+  }
+  let total = 0; for (const e of PLAN) total += e[2].length;
+  $("xs-sum").textContent = `${N} events · ${total.toLocaleString()} strokes`;
+  const frag = document.createDocumentFragment();
+  PLAN.forEach((e, i) => {
+    const r = document.createElement("div"); r.className = "row"; r.tabIndex = 0; r.setAttribute("role", "listitem");
+    r.innerHTML = `<span class="f">${i + 1}</span><span class="tm">${hhmm(i + 1)}</span><span class="a"><span class="dot" style="background:var(${PHV[e[0]]})"></span>${cap(e[1])}</span><span class="c">${e[2].length}</span>`;
+    r.onclick = () => { pause(); show(i + 1); };
+    r.onkeydown = ev => { if (ev.key === "Enter") r.onclick(); };
+    frag.append(r);
+  });
+  $("xsheet").append(frag);
+}
+function markRow(m) {
+  const rows = $("xsheet").children;
+  if (curRow) curRow.classList.remove("cur");
+  for (let i = 0; i < rows.length; i++) rows[i].classList.toggle("done", i < m - 1);
+  curRow = m ? rows[m - 1] : null;
+  if (curRow) { curRow.classList.add("cur"); const box = $("xsheet"); box.scrollTop = curRow.offsetTop - box.offsetTop - box.clientHeight / 2 + 14; }
+}
+function setPlan(plan, startAt) {
+  pause(); if (anim) { cancelAnimationFrame(anim.raf); anim = null; }
+  PLAN = plan; snaps = {}; k = 0; lx.clearRect(0, 0, CW, CH);
+  buildMeta(); show(startAt);
+}
+
+// ---- your own image ----
+let lastImg = null, lastName = "", lastFile = null;
+function busy(msg, f) {
+  const b = $("busy");
+  if (msg === null) { b.hidden = true; return; }
+  b.hidden = false; b.innerHTML = `<div>${msg}…<span>${Math.round(f * 100)}% · breaking the image into lines</span></div>`;
+}
+async function breakDown() {
+  if (!lastImg) return;
+  ["pick", "fit", "play", "next", "prev", "k"].forEach(id => $(id).disabled = true);
+  try {
+    const gray = imageToGray(lastImg, $("fit").value);
+    const seed = Math.floor(Date.now() / 86400000);
+    const plan = await buildPlan(gray, seed, busy);
+    busy(null);
+    setPlan(plan, 0);
+    let total = 0; for (const e of plan) total += e[2].length;
+    $("srcnote").textContent = `${lastName}: ${total.toLocaleString()} strokes over 720 minutes. Press Play to watch it drawn, or pick another image.`;
+    $("sub").textContent = LIVE ? `Previewing ${lastName}. The display is still drawing ${LIVE.image}.`
+      : `${lastName}, broken into 720 drawing events: one is added to the e-ink sheet each minute from 7:00 to 19:00.`;
+    if (LIVE) { $("sendbar").hidden = false; $("nowbtn").hidden = false; $("nowbtn").textContent = "Back to the display"; }
+  } catch (err) {
+    busy(null);
+    $("srcnote").textContent = `That image could not be broken down (${err.message}). Try a JPEG or PNG.`;
+  } finally {
+    ["pick", "fit", "play", "next", "prev", "k"].forEach(id => $(id).disabled = false);
+  }
+}
+function loadFile(f) {
+  if (!f || !f.type.startsWith("image/")) { $("srcnote").textContent = "That file isn't an image. Try a JPEG, PNG or WebP."; return; }
+  const url = URL.createObjectURL(f), img = new Image();
+  img.onload = () => { lastImg = img; lastFile = f; lastName = f.name.replace(/\.[^.]+$/, ""); breakDown(); };
+  img.onerror = () => { $("srcnote").textContent = "That image couldn't be opened. Try a JPEG or PNG."; };
+  img.src = url;
+}
+$("pick").onclick = () => $("file").click();
+$("file").onchange = e => { loadFile(e.target.files[0]); e.target.value = ""; };
+$("fit").onchange = () => breakDown();
+const drop = $("drop"), sheet = document.querySelector(".sheet");
+for (const el of [drop, sheet]) {
+  el.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("drag"); });
+  el.addEventListener("dragleave", () => drop.classList.remove("drag"));
+  el.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("drag"); loadFile(e.dataTransfer.files[0]); });
+}
+
+const hh = m => String(Math.floor(m / 60) % 24).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+$("ticks").innerHTML = [0, 180, 360, 540, 720].map(m => `<span>${hh(BASE + m)}</span>`).join("");
+
+if (!LIVE) {
+  // open on the sample, mid-morning, linework under way
+  setPlan(decodeSample(SAMPLE), 150);
+} else {
+  // served by the Pi: this is the drawing on the display right now
+  const livePlan = decodeSample(SAMPLE);
+  const showLive = () => { setPlan(livePlan, LIVE.k); $("sendbar").hidden = true; $("nowbtn").hidden = true; liveText(); };
+  const liveText = () => {
+    $("sub").innerHTML = `<span class="live">Live on your display</span>: ${LIVE.image}, started at ${LIVE.start}. New lines appear here as the display draws them.`;
+    $("srcnote").textContent = "Pick or drop any image to preview its breakdown, then send it to the display.";
+  };
+  $("when").innerHTML = `<option value="now">Start drawing now</option><option value="next">Start at ${LIVE.next} tomorrow</option>`;
+  $("nowbtn").onclick = showLive;
+  showLive();
+  const following = () => PLAN === livePlan && !playing && !anim && k === LIVE.k;
+  async function poll() {
+    try {
+      const s = await (await fetch("state.json", { cache: "no-store" })).json();
+      if (s.key !== LIVE.key) return location.reload();
+      if (s.k !== LIVE.k) {
+        const follow = following(); LIVE.k = s.k;
+        if (follow) { if (s.k === k + 1) drawMinute(s.k, 1500); else show(s.k); }
+      }
+    } catch (e) { /* display busy or offline; try again */ }
+  }
+  setInterval(poll, 15000);
+  $("send").onclick = async () => {
+    if (!lastFile) return;
+    $("send").disabled = true; $("srcnote").textContent = "Sending to the display…";
+    try {
+      const r = await fetch("upload?start=" + $("when").value, { method: "POST", body: lastFile,
+        headers: { "X-Filename": encodeURIComponent(lastFile.name) } });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || r.statusText);
+      $("srcnote").textContent = j.now ? `Sent. The display is starting ${lastName} on a blank sheet now; this page will switch over when it does.`
+        : `Sent. The display finishes today's drawing, then starts ${lastName} at ${j.start}.`;
+      $("sendbar").hidden = true;
+      if (j.now) { const w = setInterval(poll, 3000); setTimeout(() => clearInterval(w), 120000); }
+    } catch (e) {
+      $("srcnote").textContent = `The display didn't accept it: ${e.message}`;
+    } finally { $("send").disabled = false; }
+  };
+}
+</script>
