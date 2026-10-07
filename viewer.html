@@ -746,7 +746,8 @@ if (!LIVE) {
   const livePlan = decodeSample(SAMPLE);
   const showLive = () => { setPlan(livePlan, LIVE.k); $("sendbar").hidden = true; $("nowbtn").hidden = true; liveText(); };
   const liveText = () => {
-    $("sub").innerHTML = `<span class="live">Live on your display</span>: ${LIVE.image}, started at ${LIVE.start}. New lines appear here as the display draws them.`;
+    const tag = document.createElement("span"); tag.className = "live"; tag.textContent = "Live on your display";
+    $("sub").replaceChildren(tag, `: ${LIVE.image}, started at ${LIVE.start}. New lines appear here as the display draws them.`);
     $("srcnote").textContent = "Pick or drop any image to preview its breakdown, then send it to the display.";
   };
   $("when").innerHTML = `<option value="now">Start drawing now</option><option value="next">Start at ${LIVE.next} tomorrow</option>`;
@@ -768,12 +769,13 @@ if (!LIVE) {
     if (!lastFile) return;
     $("send").disabled = true; $("srcnote").textContent = "Sending to the display…";
     try {
-      const r = await fetch("upload?start=" + $("when").value, { method: "POST", body: lastFile,
+      const key = new URLSearchParams(location.search).get("key") || "";
+      const r = await fetch("upload?start=" + $("when").value + "&key=" + encodeURIComponent(key), { method: "POST", body: lastFile,
         headers: { "X-Filename": encodeURIComponent(lastFile.name) } });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || r.statusText);
       $("srcnote").textContent = j.now ? `Sent. The display is starting ${lastName} on a blank sheet now; this page will switch over when it does.`
-        : `Sent. The display finishes today's drawing, then starts ${lastName} at ${j.start}.`;
+        : `Sent. The display finishes what it's drawing, then starts ${lastName} at ${j.start}.`;
       $("sendbar").hidden = true;
       if (j.now) { const w = setInterval(poll, 3000); setTimeout(() => clearInterval(w), 120000); }
     } catch (e) {
