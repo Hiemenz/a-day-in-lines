@@ -5,3 +5,4 @@ breakdown/
 current.png
 frame.png
 .DS_Store
+.pytest_cache/

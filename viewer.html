@@ -165,7 +165,9 @@ const SAMPLE = /*PLAN*/[];
 const LIVE = /*LIVE*/null;
 const BASE = LIVE ? LIVE.startMin : 7 * 60;
 const PER = LIVE && LIVE.perMin ? LIVE.perMin : 1;      // minutes per drawing event
-const PH = { c: "Composition", l: "Linework", s: "Shading", f: "Finishing" };
+const PAINT = !!(LIVE && LIVE.medium === "paint");     // painted frames come from the display, not from stroke drawing here
+const PH = PAINT ? { c: "Blocking in", l: "Underpainting", s: "Building form", f: "Details & highlights" }
+                 : { c: "Composition", l: "Linework", s: "Shading", f: "Finishing" };
 const PHV = { c: "--ph-c", l: "--ph-l", s: "--ph-s", f: "--ph-f" };
 const N = 720, CW = 1600, CH = 960, W = 800, H = 480;
 const $ = id => document.getElementById(id);
@@ -592,13 +594,32 @@ const SNAP = [180, 360, 540], GRAPHITE = "#2a2c31";
 function drawEvent(i) { for (const s of PLAN[i][2]) stroke(lx, s, GRAPHITE, 1); }
 function keepSnap(m) { if (SNAP.includes(m) && !snaps[m]) { const c = mk(); c.getContext("2d").drawImage(layer, 0, 0); snaps[m] = c; } }
 function rebuild(target) {
+  if (PAINT) { k = target; return; }
   let start = 0; for (const m of SNAP) if (m <= target && snaps[m]) start = m;
   lx.clearRect(0, 0, CW, CH); if (start) lx.drawImage(snaps[start], 0, 0);
   for (let i = start; i < target; i++) { drawEvent(i); keepSnap(i + 1); }
   k = target;
 }
-function advanceTo(target) { if (target < k) return rebuild(target); for (let i = k; i < target; i++) { drawEvent(i); keepSnap(i + 1); } k = target; }
+function advanceTo(target) { if (PAINT) { k = target; return; } if (target < k) return rebuild(target); for (let i = k; i < target; i++) { drawEvent(i); keepSnap(i + 1); } k = target; }
+const frames = {};
+function paintFrame(m) {                                 // the stored 1-bit frame for minute m, fetched once
+  if (!frames[m]) {
+    const img = new Image();
+    img.onload = () => { if (k === m) present(); };
+    img.src = `frame/${m}.png?v=${encodeURIComponent(LIVE.key)}`;
+    frames[m] = img;
+  }
+  const img = frames[m];
+  return img.complete && img.naturalWidth ? img : null;
+}
 function present() {
+  if (PAINT) {
+    vx.globalCompositeOperation = "source-over"; vx.fillStyle = "#fff"; vx.fillRect(0, 0, CW, CH);
+    const img = paintFrame(k);
+    if (img) { vx.imageSmoothingEnabled = false; vx.drawImage(img, 0, 0, CW, CH); }
+    if (k < N) paintFrame(k + 1);
+    return;
+  }
   vx.globalCompositeOperation = "source-over"; vx.drawImage(paper, 0, 0);
   tx.globalCompositeOperation = "source-over"; tx.clearRect(0, 0, CW, CH); tx.drawImage(layer, 0, 0);
   tx.globalCompositeOperation = "destination-out"; tx.fillStyle = grain; tx.fillRect(0, 0, CW, CH);
@@ -607,7 +628,7 @@ function present() {
   if ($("hl").checked) vx.drawImage(blue, 0, 0);
 }
 function highlight(i, upto) {
-  bx.clearRect(0, 0, CW, CH); if (i < 0) return;
+  bx.clearRect(0, 0, CW, CH); if (i < 0 || PAINT) return;
   const ss = PLAN[i][2], m = upto ?? ss.length, col = css("--blue") || "#2f6fd6";
   for (let j = 0; j < m; j++) stroke(bx, ss[j], col, 1.6);
 }
@@ -616,7 +637,7 @@ const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 function label(m) {
   $("clock").textContent = hhmm(m);
   $("minute").textContent = m ? `minute ${m} of ${N}` : "blank sheet";
-  if (!m) { $("phase").textContent = "Blank"; $("label").textContent = "Off-white animation paper, peg holes only"; $("count").textContent = ""; }
+  if (!m) { $("phase").textContent = "Blank"; $("label").textContent = PAINT ? "A blank canvas" : "Off-white animation paper, peg holes only"; $("count").textContent = ""; }
   else { const e = PLAN[m - 1], n = e[2].length; $("phase").textContent = PH[e[0]]; $("label").textContent = cap(e[1]); $("count").textContent = `+${n} stroke${n === 1 ? "" : "s"}`; }
   $("k").value = m; markRow(m);
 }
@@ -626,6 +647,12 @@ let anim = null;
 function stopAnim() { if (anim) { cancelAnimationFrame(anim.raf); anim.done(); anim = null; } }
 function drawMinute(m, dur, then) {
   stopAnim(); if (m < 1 || m > N) return;
+  if (PAINT) {                                           // no strokes to animate: show the minute's frame, then carry on
+    advanceTo(m); label(m); present();
+    const t = setTimeout(() => { anim = null; then && then(); }, Math.min(dur, 400));
+    anim = { raf: 0, done: () => clearTimeout(t) };
+    return;
+  }
   advanceTo(m - 1);
   const ss = PLAN[m - 1][2], t0 = performance.now(); let drawn = 0;
   label(m);
@@ -725,13 +752,18 @@ async function breakDown() {
 function loadFile(f) {
   if (!f || !f.type.startsWith("image/")) { $("srcnote").textContent = "That file isn't an image. Try a JPEG, PNG or WebP."; return; }
   const url = URL.createObjectURL(f), img = new Image();
-  img.onload = () => { lastImg = img; lastFile = f; lastName = f.name.replace(/\.[^.]+$/, ""); breakDown(); };
+  img.onload = () => {
+    lastImg = img; lastFile = f; lastName = f.name.replace(/\.[^.]+$/, "");
+    if (!PAINT) return breakDown();
+    $("srcnote").textContent = `${lastName} is ready. The display will paint it from a blank canvas; there is no preview here, because the painting is made on the Pi.`;
+    $("sendbar").hidden = false;                          // the browser can only preview pencil line work
+  };
   img.onerror = () => { $("srcnote").textContent = "That image couldn't be opened. Try a JPEG or PNG."; };
   img.src = url;
 }
 $("pick").onclick = () => $("file").click();
 $("file").onchange = e => { loadFile(e.target.files[0]); e.target.value = ""; };
-$("fit").onchange = () => breakDown();
+$("fit").onchange = () => { if (!PAINT) breakDown(); };
 const drop = $("drop"), sheet = document.querySelector(".sheet");
 for (const el of [drop, sheet]) {
   el.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("drag"); });
@@ -740,6 +772,7 @@ for (const el of [drop, sheet]) {
 }
 
 const hh = m => String(Math.floor(m / 60) % 24).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+if (PAINT) { $("hl").parentElement.hidden = true; document.querySelector(".xhead span:nth-child(3)").textContent = "Paint added"; }
 $("ticks").innerHTML = [0, 180, 360, 540, 720].map(m => `<span>${hh(Math.round(BASE + m * PER))}</span>`).join("");
 
 if (!LIVE) {
@@ -751,7 +784,7 @@ if (!LIVE) {
   const showLive = () => { setPlan(livePlan, LIVE.k); $("sendbar").hidden = true; $("nowbtn").hidden = true; liveText(); };
   const liveText = () => {
     const tag = document.createElement("span"); tag.className = "live"; tag.textContent = "Live on your display";
-    $("sub").replaceChildren(tag, `: ${LIVE.image}, started at ${LIVE.start}, finishing at ${LIVE.finish}. New lines appear here as the display draws them.`);
+    $("sub").replaceChildren(tag, `: ${LIVE.image}, started at ${LIVE.start}, finishing at ${LIVE.finish}. ${PAINT ? "New paint appears here as the display paints it." : "New lines appear here as the display draws them."}`);
     $("srcnote").textContent = "Pick or drop any image to preview its breakdown, then send it to the display.";
   };
   $("when").innerHTML = `<option value="now">Start drawing now</option><option value="next">Start at ${LIVE.next} tomorrow</option><option value="at">Start at a time…</option>`;
