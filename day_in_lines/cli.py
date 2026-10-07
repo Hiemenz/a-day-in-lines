@@ -1,0 +1,210 @@
+"""Command line: run the display, bake, preview, break an image down."""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import sys
+import time
+from pathlib import Path
+
+from PIL import Image, ImageDraw
+
+from .constants import H, IMG_EXT, TOTAL, W
+from .displays import FileDisplay, WaveshareDisplay
+from .export import breakdown
+from .library import Library, bake_image
+from .planner import build_plan
+from .render import Sheet, dither_1bit
+from .schedule import Overrides, parse_end, schedule, window
+from .server import Live, serve
+
+
+def pick_image(src: Path, day: dt.date) -> Path:
+    if src.is_dir():
+        files = sorted(p for p in src.iterdir() if p.suffix.lower() in IMG_EXT)
+        if not files:
+            sys.exit(f"no images in {src}")
+        return files[day.toordinal() % len(files)]
+    return src
+
+
+def run(args):
+    cache = Path(args.cache).expanduser()
+    cache.mkdir(parents=True, exist_ok=True)
+    if args.display == "file":
+        disp = FileDisplay(args.out, tuple(map(int, args.size.split("x"))))
+    elif args.display.startswith("waveshare:"):
+        disp = WaveshareDisplay(args.display.split(":", 1)[1], args.gamma)
+    else:
+        sys.exit(f"unknown display {args.display}")
+    start = dt.datetime.strptime(args.start, "%H:%M").time()
+    dur = window(start, parse_end(args.end))
+    lib = Library(cache, Path(args.image).expanduser(), args.fit, args.seed, disp.size, args.gamma, args.mono)
+    lib.scan()
+    live = Live()
+    lib.watch(args.scan_every)
+    overrides = Overrides(cache, start, dur)
+    if args.serve:
+        serve(live, args.serve, overrides, start, dur, lib, args.upload_key)
+    print(f"drawing each day {start:%H:%M}-{(dt.datetime.combine(dt.date.min, start) + dur):%H:%M}"
+          f" ({dur.total_seconds() / 60 / TOTAL:.2g} min per drawing event)", flush=True)
+
+    key, shown, since_full = None, -1, 0
+    while True:
+        try:
+            key, shown, since_full = tick(args, disp, lib, live, overrides, start, dur, key, shown, since_full)
+        except Exception as e:           # a bad picture or a display hiccup must not stop the clock
+            print(f"error: {e}; trying again shortly", flush=True)
+            key = None                   # redraw in full once it works again
+            live.wake.wait(30)
+        live.wake.clear()
+
+
+def tick(args, disp, lib, live, overrides, start, dur, key, shown, since_full):
+    """One minute of the clock: put the right frame up, then wait for the next minute."""
+    now = dt.datetime.now()
+    new_key, h, k, started, finish = schedule(now, start, dur, overrides, lib)
+    if new_key is None:
+        print(f"no pictures yet in {lib.src}; waiting", flush=True)
+        live.wake.wait(30)
+        return key, shown, since_full
+    lib.ensure(h)                    # normally already baked by the watcher
+    full = new_key != key
+    key = new_key
+    if k != shown or full:
+        since_full += 1
+        if args.full_refresh_every and since_full >= args.full_refresh_every:
+            full, since_full = True, 0
+        with Image.open(lib.frame(h, k)) as img:          # static: just open this minute's frame
+            img.load()
+            disp.show(img, full=full)
+        shown = k
+        meta = lib.meta(h)
+        label = meta["events"][k - 1][1] if k else "blank sheet"
+        print(f"{now:%H:%M}  {k:3d}/{TOTAL}  {meta['name']}  {label}", flush=True)
+    with live.lock:
+        live.key, live.hash, live.k, live.name = key, h, k, lib.meta(h)["name"]
+        live.started, live.finish = started, finish
+    live.wake.wait(max(1, 60 - dt.datetime.now().second + 0.5))
+    return key, shown, since_full
+
+
+def preview(image, seed, fit_mode, outdir: Path, every: int):
+    outdir.mkdir(parents=True, exist_ok=True)
+    events = build_plan(image, seed, fit_mode)
+    sh = Sheet(seed)
+    hours = {60 * h: None for h in range(1, 13)}
+    gif = []
+    for k in range(TOTAL + 1):
+        if k:
+            sh.draw_event(events[k - 1])
+        if k in hours:
+            hours[k] = sh.paper((W, H))
+        if k % every == 0:
+            gif.append(sh.paper((W // 2, H // 2)).convert("P", palette=Image.ADAPTIVE, colors=64))
+    sh.paper().save(outdir / "final.png")
+    dither_1bit(sh.gray()).save(outdir / "final_eink.png")
+    gif += [gif[-1]] * 40
+    gif[0].save(outdir / "timelapse.gif", save_all=True, append_images=gif[1:], duration=50, loop=0)
+    tw, th, cols = W // 2, H // 2, 4
+    cs = Image.new("RGB", (cols * tw + (cols + 1) * 10, 3 * (th + 26) + 10), (40, 40, 42))
+    dd = ImageDraw.Draw(cs)
+    for i, k in enumerate(sorted(hours)):
+        x, y = 10 + (i % cols) * (tw + 10), 10 + (i // cols) * (th + 26)
+        cs.paste(hours[k].resize((tw, th), Image.LANCZOS), (x, y))
+        dd.text((x, y + th + 6), f"hour {k // 60}  -  {events[k - 1]['phase']}", fill=(225, 225, 225))
+    cs.save(outdir / "contact_sheet.png")
+    print("wrote", ", ".join(p.name for p in sorted(outdir.iterdir())))
+
+
+def main():
+    ap = argparse.ArgumentParser(description="A Day in Lines: a drawing that takes all day.")
+    ap.add_argument("--image", required=True, help="image file, or a folder (one picture per day)")
+    ap.add_argument("--seed", type=int, default=None, help="fixed seed (default: the date)")
+    ap.add_argument("--fit", choices=["crop", "pad"], default="crop", help="fill the sheet, or keep the whole image")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sp = sub.add_parser("plan", help="print the 720-minute schedule")
+    sp.add_argument("--start", default="07:00")
+    sp.add_argument("--end", default=None, help="when the drawing should be finished (default: 12 hours after --start)")
+    sb = sub.add_parser("breakdown", help="exposure sheet, viewer page, and per-minute frames for an image")
+    sb.add_argument("-o", "--outdir", default="breakdown")
+    sb.add_argument("--start", default="07:00")
+    sb.add_argument("--end", default=None, help="when the drawing should be finished (default: 12 hours after --start)")
+    sb.add_argument("--frames", type=int, default=0, metavar="N",
+                    help="also save the sheet every N minutes with that minute's new lines in blue (1 = all 720)")
+    sk = sub.add_parser("bake", help="break down an image (or every image in a folder) ahead of time")
+    sk.add_argument("--to", default=None, help=argparse.SUPPRESS)
+    sk.add_argument("--size", default="800x480", help="display size the frames are made for")
+    sk.add_argument("--gamma", type=float, default=2.4)
+    sk.add_argument("--gray", action="store_true", help="greyscale frames instead of 1-bit")
+    sk.add_argument("--cache", default="~/.cache/a-day-in-lines")
+    sf = sub.add_parser("frame", help="the sheet after k minutes")
+    sf.add_argument("k", type=int); sf.add_argument("-o", "--out", default="frame.png")
+    sf.add_argument("--mono", action="store_true"); sf.add_argument("--gamma", type=float, default=2.4)
+    sv = sub.add_parser("preview", help="final frame, hourly contact sheet, timelapse")
+    sv.add_argument("-o", "--outdir", default="preview")
+    sv.add_argument("--every", type=int, default=6)
+    sr = sub.add_parser("run", help="drive the display")
+    sr.add_argument("--display", default="file", help="'file' or 'waveshare:<module>', e.g. waveshare:epd7in5_V2")
+    sr.add_argument("--out", default="current.png")
+    sr.add_argument("--size", default="800x480")
+    sr.add_argument("--start", default="07:00", help="when the drawing begins each day")
+    sr.add_argument("--end", default=None, metavar="HH:MM",
+                    help="when each day's drawing is finished (default: 12 hours after --start, one event a minute)")
+    sr.add_argument("--cache", default="~/.cache/a-day-in-lines")
+    sr.add_argument("--serve", type=int, default=0, metavar="PORT",
+                    help="serve the viewer on this port: watch live, upload any image from your phone")
+    sr.add_argument("--scan-every", type=int, default=60, metavar="SEC",
+                    help="how often to look for new pictures in the folder")
+    sr.add_argument("--mono", action=argparse.BooleanOptionalAction, default=True)
+    sr.add_argument("--gamma", type=float, default=2.4, help="darken mid-tones before 1-bit dithering")
+    sr.add_argument("--upload-key", default=None, metavar="KEY",
+                    help="only accept uploads from the viewer opened as /?key=KEY (default: anyone on the network)")
+    sr.add_argument("--full-refresh-every", type=int, default=0,
+                    help="full (blinking) refresh every N updates to clear ghosting; 0 = never")
+    args = ap.parse_args()
+
+    today = dt.date.today()
+    seed = args.seed if args.seed is not None else today.toordinal()
+    if args.cmd == "run":
+        return run(args)
+    if args.cmd == "bake":
+        size = tuple(map(int, args.size.split("x")))
+        if args.to:                                   # one image, called by the watcher
+            bake_image(Path(args.image), seed, args.fit, Path(args.to), size, args.gamma, not args.gray)
+            return
+        lib = Library(Path(args.cache).expanduser(), Path(args.image).expanduser(), args.fit, args.seed,
+                      size, args.gamma, not args.gray)
+        lib.scan()
+        todo = lib.unbaked()
+        print(f"{len(lib.data['images'])} pictures, {len(todo)} to break down")
+        for h in todo:
+            t0 = time.time()
+            lib.bake(h)
+            print(f"  {lib.data['images'][h]['name']}: {time.time() - t0:.0f}s")
+        return
+    image = pick_image(Path(args.image).expanduser(), today)
+    if args.cmd == "plan":
+        st = dt.datetime.strptime(args.start, "%H:%M").time()
+        t0, dur = dt.datetime.combine(today, st), window(st, parse_end(args.end))
+        for i, e in enumerate(build_plan(image, seed, args.fit)):
+            print(f"{i + 1:3d}  {t0 + dur * (i + 1) / TOTAL:%H:%M}  {e['phase']:<12} "
+                  f"{e['label']:<24} {len(e['strokes']):3d} strokes")
+    elif args.cmd == "breakdown":
+        st = dt.datetime.strptime(args.start, "%H:%M").time()
+        breakdown(image, seed, args.fit, Path(args.outdir), st, args.frames, window(st, parse_end(args.end)))
+    elif args.cmd == "frame":
+        events = build_plan(image, seed, args.fit)
+        sh = Sheet(seed)
+        for e in events[:args.k]:
+            sh.draw_event(e)
+        (dither_1bit(sh.gray(), args.gamma) if args.mono else sh.paper((W, H))).save(args.out)
+        print(args.out)
+    elif args.cmd == "preview":
+        preview(image, seed, args.fit, Path(args.outdir), args.every)
+    elif args.cmd == "run":
+        run(args)
+
+
+if __name__ == "__main__":
+    main()
