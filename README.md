@@ -1,6 +1,6 @@
 # A Day in Lines
 
-An e-ink picture for the wall that draws itself. Give it any image, and over 12 hours a Raspberry Pi redraws it on the panel as a graphite pencil sketch: one stroke group per minute, 720 in all. Nothing is erased or redrawn, so anyone walking past sees a drawing in the middle of being made.
+An e-ink picture for the wall that draws itself. Give it any image, and over a day (12 hours by default, or whatever start and finish times you choose) a Raspberry Pi redraws it on the panel as a graphite pencil sketch, one stroke group at a time, 720 in all. Nothing is erased or redrawn, so anyone walking past sees a drawing in the middle of being made.
 
 ![The finished sketch](docs/final.png)
 
@@ -23,7 +23,7 @@ The sheet at each hour of the day ([full size](docs/contact_sheet.png)), and the
 
 ## How a picture becomes a day of drawing
 
-The image is fitted to an 800×480 sheet (cropped to 5:3 by default, or padded with `--fit pad`). Transparent areas count as blank paper. The program then plans 720 drawing events, the way an animator works at a desk:
+With the default 07:00–19:00 day, one event is added each minute; with `--start`/`--end` the 720 events are spread evenly over your window instead. The image is fitted to an 800×480 sheet (cropped to 5:3 by default, or padded with `--fit pad`). Transparent areas count as blank paper. The program then plans 720 drawing events, the way an animator works at a desk:
 
 | Minutes | Phase | What appears |
 |---|---|---|
@@ -76,8 +76,10 @@ Open `http://<pi-address>:8080/` on any device on your network.
 
 - **Live:** the page shows exactly the strokes on the display, at the current minute. New lines appear in blue as the display draws them. You can scrub back through the day, or tap any row of the exposure sheet to jump to that minute.
 - **Any image:** pick or drop an image to preview its breakdown, then tap **Send to display**.
-  - *Start drawing now:* the panel clears and starts the new image at minute 1, replacing any other uploaded drawing on the sheet.
+  - *Start drawing now:* the panel clears and starts the new image straight away, replacing any other uploaded drawing on the sheet.
   - *Start at 07:00 tomorrow* (your `--start` time): waits for whatever is on the sheet to finish. Several uploads queue up and are drawn one after another; the page tells you when each one will start.
+  - *Start at a time…:* pick a clock time; the drawing starts the next time it comes round and takes over the sheet then.
+  - *Finish by* (optional): the time the drawing should be complete, e.g. start 18:00, finish by 22:00. Leave it empty for the same length as a normal day.
 - **When an upload hands back:** a finished upload stays up until the next start time, like any day's drawing. If it finishes early in a day's drawing time (an upload started in the evening finishing the next morning), the day's drawing takes over straight away, part-drawn, instead of leaving the panel idle for a day.
 - **Who can upload:** by default, anyone on your network. Start with `--upload-key SOMEWORD` and only a viewer opened as `http://<pi-address>:8080/?key=SOMEWORD` can send pictures; watching needs no key.
 
@@ -103,8 +105,8 @@ Global options go before the command: `python3 a_day_in_lines.py --image PATH [-
 |---|---|
 | `run` | Drive the display (see below) |
 | `bake` | Process an image, or every image in a folder, ahead of time (`--size`, `--gamma`, `--gray`, `--cache`) |
-| `plan` | Print the 720-minute schedule (`--start HH:MM`) |
-| `breakdown` | Exposure sheet, offline viewer and optional per-minute frames (`-o`, `--start`, `--frames N`) |
+| `plan` | Print the schedule with the time of every event (`--start HH:MM`, `--end HH:MM`) |
+| `breakdown` | Exposure sheet, offline viewer and optional per-event frames (`-o`, `--start`, `--end`, `--frames N`) |
 | `frame K` | Render the sheet after K minutes (`-o file.png`, `--mono` for the 1-bit panel look, `--gamma`) |
 | `preview` | Final sheet, e-ink frame, hourly contact sheet and timelapse GIF (`-o dir/`, `--every N`) |
 
@@ -114,6 +116,7 @@ Options for `run`:
 |---|---|---|
 | `--display` | `file` | `file` writes `--out` (default `current.png`); `waveshare:<module>` drives a panel, e.g. `waveshare:epd7in5_V2` |
 | `--start` | `07:00` | When each day's drawing begins |
+| `--end` | 12 h after `--start` | When each day's drawing is finished; can cross midnight (e.g. `--start 22:00 --end 06:00`) |
 | `--serve PORT` | off | Serve the viewer and accept uploads |
 | `--upload-key KEY` | none | Require `?key=KEY` to upload |
 | `--scan-every SEC` | `60` | How often to look for new pictures |
@@ -136,7 +139,7 @@ The unit assumes user `pi`, the repo in `~/a-day-in-lines`, pictures in `~/pictu
 
 ## How it behaves
 
-- **Every minute:** the stored frame for that minute is pushed with a partial refresh. Each frame differs from the one before it only by that minute's new strokes. The frames use ordered (Bayer) dithering, which is local, so only pixels under a new stroke change and the panel never shimmers.
+- **Every minute:** the stored frame for that point in the drawing is pushed with a partial refresh. Each frame differs from the one before it only by the new strokes. The frames use ordered (Bayer) dithering, which is local, so only pixels under a new stroke change and the panel never shimmers.
 - **Reboots:** the current minute's stored frame is opened straight away, including for an uploaded picture that is mid-drawing. Nothing is rebuilt.
 - **Before the start time:** the last finished drawing stays up. At the start time the sheet clears to blank paper, which is the day's one full refresh.
 - **Errors:** if a frame can't be shown (a display hiccup, a missing file), the error is logged and the display tries again 30 seconds later with a full refresh, instead of exiting.
