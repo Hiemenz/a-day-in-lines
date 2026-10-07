@@ -15,15 +15,19 @@ from .pen import Pen, length, resample
 
 @dataclass(frozen=True)
 class Look:
-    """How the picture is read. detail > 1 draws more fine lines and tighter hatching;
-    contrast > 1 darkens the shading of flat, low-contrast pictures (both 1.0 = as before)."""
+    """How the picture is read and what it is drawn with. detail > 1 draws more fine lines
+    and tighter hatching (or smaller, more numerous strokes in paint); contrast > 1 darkens the
+    shading of flat, low-contrast pictures (or deepens the tones of a painting)."""
     detail: float = 1.0
     contrast: float = 1.0
+    medium: str = "pencil"             # or "paint"
 
     @property
     def suffix(self) -> str:
         """Part of a baked folder's name; empty for the defaults so old bakes stay valid."""
-        return "" if self == Look() else f"-d{self.detail:g}-c{self.contrast:g}"
+        medium = "" if self.medium == "pencil" else f"-{self.medium}"
+        tuned = "" if (self.detail, self.contrast) == (1.0, 1.0) else f"-d{self.detail:g}-c{self.contrast:g}"
+        return medium + tuned
 
 
 def load_target(path: Path, fit="crop", contrast=1.0):

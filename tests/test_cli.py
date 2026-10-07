@@ -5,7 +5,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from day_in_lines.cli import check, upload_key_for
+from day_in_lines.cli import check, gamma_of, upload_key_for
+from conftest import make_png
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -51,3 +52,23 @@ def test_out_of_range_look_is_rejected():
 def test_unknown_display_is_a_clear_error():
     r = run_cli("check", "--display", "magic")
     assert r.returncode != 0 and "unknown display" in r.stderr
+
+
+def test_gamma_defaults_follow_the_medium_unless_given():
+    assert gamma_of(argparse.Namespace(medium="pencil", gamma=None)) == 2.4
+    assert gamma_of(argparse.Namespace(medium="paint", gamma=None)) == 1.6
+    assert gamma_of(argparse.Namespace(medium="paint", gamma=2.0)) == 2.0
+    assert gamma_of(argparse.Namespace(gamma=None)) == 2.4
+
+
+def test_unknown_medium_is_rejected():
+    r = run_cli("--image", "x.png", "--medium", "oil", "plan")
+    assert r.returncode == 2 and "invalid choice" in r.stderr
+
+
+def test_a_painting_frame_from_the_command_line(tmp_path):
+    img = make_png(tmp_path / "p.png", (300, 180))
+    out = tmp_path / "f.png"
+    r = run_cli("--image", str(img), "--medium", "paint", "--seed", "1", "frame", "40", "-o", str(out), "--mono")
+    assert r.returncode == 0, r.stderr
+    assert Image.open(out).mode == "1"

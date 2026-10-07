@@ -135,3 +135,44 @@ def test_a_stalled_upload_does_not_block_other_requests(server):
     s.sendall(b"POST /upload?key=sesame HTTP/1.1\r\nHost: x\r\nContent-Length: 5000\r\n\r\nabc")
     assert call(server, "GET", "/state.json")[0] == 200       # threads: others are served meanwhile
     s.close()
+
+
+def test_stored_frames_are_served_and_nothing_else(server):
+    lib, live = server.lib, server.live
+    h = "abc123"
+    lib.data["images"][h] = {"path": "x", "name": "x", "added": "", "drawn": []}
+    (lib.dir(h) / "frames").mkdir(parents=True)
+    data = png((800, 480), 255, "L")
+    (lib.frame(h, 5)).write_bytes(data)
+    assert call(server, "GET", "/frame/5.png")[0] == 404                 # nothing on display yet
+    with live.lock:
+        live.key, live.hash = "day:1", h
+    status, body = call(server, "GET", "/frame/5.png")
+    assert status == 200 and body == data
+    for bad in ("/frame/6.png", "/frame/721.png", "/frame/abc.png", "/frame/5.png/x", "/frame/-1.png",
+                "/frame/../library.json", "/frame/0005.png", "/frame/5.png%2f..%2fx"):
+        assert call(server, "GET", bad)[0] == 404, bad
+
+
+def test_the_page_knows_which_medium_is_live(tmp_path):
+    import datetime
+    from day_in_lines.planner import Look
+    src = tmp_path / "pictures"
+    src.mkdir()
+    lib = Library(tmp_path / "cache", src, "crop", look=Look(medium="paint"))
+    live = Live()
+    start, dur = dt.time(7), dt.timedelta(hours=12)
+    srv = serve(live, 0, Overrides(tmp_path / "cache", start, dur), start, dur, lib, upload_key=None, bind="127.0.0.1")
+    try:
+        h = "abc123"
+        lib.data["images"][h] = {"path": "x", "name": "x", "added": "", "drawn": []}
+        lib.dir(h).mkdir(parents=True)
+        (lib.dir(h) / "viewer.json").write_text("[]")
+        with live.lock:
+            live.key, live.hash, live.k, live.name = "day:1", h, 0, "ship"
+            live.started, live.finish = datetime.datetime(2026, 3, 10, 7), datetime.datetime(2026, 3, 10, 19)
+        status, page = call(srv, "GET", "/")
+        assert status == 200 and b'"medium": "paint"' in page
+    finally:
+        srv.shutdown()
+        srv.server_close()

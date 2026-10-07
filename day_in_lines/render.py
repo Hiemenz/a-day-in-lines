@@ -66,6 +66,10 @@ class Sheet:
         a = a * np.clip(0.3 + 1.0 * self.grain[y0:y1, x0:x1], 0, 1.2)   # paper tooth
         self.canvas[y0:y1, x0:x1] *= (1 - np.clip(a * 0.95, 0, 0.94))
 
+    def ink(self):
+        """How much graphite is on the sheet, 0-1 per pixel."""
+        return 1 - self.canvas
+
     def gray(self, size=(W, H)) -> Image.Image:
         img = Image.fromarray(np.clip(self.canvas * 255, 0, 255).astype(np.uint8), "L")
         return img.resize(size, Image.LANCZOS)

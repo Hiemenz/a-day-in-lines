@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import re
 import threading
 from pathlib import Path
 
@@ -61,10 +62,15 @@ def serve(live: Live, port: int, overrides: Overrides, start: dt.time, dur: dt.t
                                 start=live.started.strftime("%H:%M"), startMin=live.started.hour * 60 + live.started.minute,
                                 finish=live.finish.strftime("%H:%M"),
                                 perMin=(live.finish - live.started).total_seconds() / 60 / TOTAL,
-                                next=start.strftime("%H:%M"), needsKey=bool(upload_key))
+                                next=start.strftime("%H:%M"), needsKey=bool(upload_key), medium=lib.look.medium)
                     return self._send(200, fill_live(live.html[1], info), "text/html; charset=utf-8")
                 if path == "/state.json":
                     return self._send(200, json.dumps(dict(key=live.key, k=live.k)))
+                m = re.fullmatch(r"/frame/(\d{1,3})\.png", path)       # the stored frame, as the panel shows it
+                if m and live.hash is not None and int(m.group(1)) <= TOTAL:
+                    f = lib.frame(live.hash, int(m.group(1)))
+                    if f.is_file():
+                        return self._send(200, f.read_bytes(), "image/png")
             self._send(404, '{"error":"not found"}')
 
         def do_POST(self):

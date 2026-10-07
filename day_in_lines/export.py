@@ -9,8 +9,8 @@ import numpy as np
 from PIL import Image
 
 from .constants import H, TOTAL, W
-from .planner import Look, build_plan
-from .render import Sheet
+from .media import new_sheet, plan
+from .planner import Look
 
 
 def viewer_plan(events) -> str:
@@ -62,22 +62,22 @@ def breakdown(image, seed, fit_mode, outdir: Path, start: dt.time, frames_every:
     """Everything the viewer shows, as files: the exposure sheet, an offline viewer
     page, and optionally the sheet at each iteration with that minute's new lines in blue."""
     outdir.mkdir(parents=True, exist_ok=True)
-    events = build_plan(image, seed, fit_mode, look)
+    events = plan(image, seed, fit_mode, look)
     write_xsheet(events, outdir / "exposure_sheet.csv", start, dur)
     (outdir / "day_in_lines.html").write_text(viewer_html(events))
     if frames_every:
         fd = outdir / "frames"
         fd.mkdir(exist_ok=True)
-        sh = Sheet(seed)
+        sh = new_sheet(look, seed)
         blue = np.array([0.18, 0.43, 0.84], np.float32)
         for i, e in enumerate(events):
             sh.draw_event(e)
             m = i + 1
             if m % frames_every and m != TOTAL:
                 continue
-            new = Sheet(seed, pegs=False)
+            new = new_sheet(look, seed, pegs=False)
             new.draw_event(e)
-            ink = (1 - new.canvas)[..., None]
+            ink = new.ink()[..., None]
             img = np.asarray(sh.paper(), np.float32) / 255
             img = img * (1 - ink * .85) + blue * ink * .85
             Image.fromarray(np.clip(img * 255, 0, 255).astype(np.uint8)).resize((W, H), Image.LANCZOS) \

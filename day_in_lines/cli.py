@@ -14,8 +14,9 @@ from .constants import H, IMG_EXT, TOTAL, W
 from .displays import FileDisplay, WaveshareDisplay
 from .export import breakdown
 from .library import Library, bake_image
-from .planner import Look, build_plan
-from .render import Sheet, dither_1bit
+from .media import DEFAULT_GAMMA, MEDIA, PHASE_NAMES, new_sheet, plan
+from .planner import Look
+from .render import dither_1bit
 from .schedule import Overrides, parse_end, schedule, window
 from .server import Live, serve
 
@@ -25,7 +26,7 @@ def make_display(args):
         return FileDisplay(args.out, tuple(map(int, args.size.split("x"))))
     if args.display.startswith("waveshare:"):
         try:
-            return WaveshareDisplay(args.display.split(":", 1)[1], args.gamma)
+            return WaveshareDisplay(args.display.split(":", 1)[1], gamma_of(args))
         except ImportError as e:
             sys.exit(f"could not load the panel driver ({e}). Is PYTHONPATH set to the e-Paper "
                      f"python/lib folder? See the README.")
@@ -50,7 +51,7 @@ def check(args):
         d.text((24, 40), "partial refresh adds the circle" if not extra else "partial refresh worked", fill=0)
         if extra:
             d.ellipse([w // 2 - 40, h // 2 - 40, w // 2 + 40, h // 2 + 40], outline=0, width=4)
-        return dither_1bit(im, args.gamma)
+        return dither_1bit(im, gamma_of(args))
 
     t0 = time.time()
     disp.show(card(), full=True)
@@ -84,7 +85,13 @@ def upload_key_for(args, cache: Path):
 
 
 def look_of(args) -> Look:
-    return Look(args.detail, args.contrast)
+    return Look(args.detail, args.contrast, getattr(args, "medium", "pencil"))
+
+
+def gamma_of(args) -> float:
+    """--gamma if given, else what suits the medium (paint needs less darkening than pencil)."""
+    g = getattr(args, "gamma", None)
+    return g if g is not None else DEFAULT_GAMMA[getattr(args, "medium", "pencil")]
 
 
 def pick_image(src: Path, day: dt.date) -> Path:
@@ -102,7 +109,7 @@ def run(args):
     disp = make_display(args)
     start = dt.datetime.strptime(args.start, "%H:%M").time()
     dur = window(start, parse_end(args.end))
-    lib = Library(cache, Path(args.image).expanduser(), args.fit, args.seed, disp.size, args.gamma, args.mono, look_of(args))
+    lib = Library(cache, Path(args.image).expanduser(), args.fit, args.seed, disp.size, gamma_of(args), args.mono, look_of(args))
     lib.scan()
     live = Live()
     overrides = Overrides(cache, start, dur)
@@ -157,10 +164,10 @@ def tick(args, disp, lib, live, overrides, start, dur, key, shown, since_full):
     return key, shown, since_full
 
 
-def preview(image, seed, fit_mode, outdir: Path, every: int, look: Look = Look()):
+def preview(image, seed, fit_mode, outdir: Path, every: int, look: Look = Look(), gamma=2.4):
     outdir.mkdir(parents=True, exist_ok=True)
-    events = build_plan(image, seed, fit_mode, look)
-    sh = Sheet(seed)
+    events = plan(image, seed, fit_mode, look)
+    sh = new_sheet(look, seed)
     hours = {60 * h: None for h in range(1, 13)}
     gif = []
     for k in range(TOTAL + 1):
@@ -171,7 +178,7 @@ def preview(image, seed, fit_mode, outdir: Path, every: int, look: Look = Look()
         if k % every == 0:
             gif.append(sh.paper((W // 2, H // 2)).convert("P", palette=Image.ADAPTIVE, colors=64))
     sh.paper().save(outdir / "final.png")
-    dither_1bit(sh.gray()).save(outdir / "final_eink.png")
+    dither_1bit(sh.gray(), gamma).save(outdir / "final_eink.png")
     gif += [gif[-1]] * 40
     gif[0].save(outdir / "timelapse.gif", save_all=True, append_images=gif[1:], duration=50, loop=0)
     tw, th, cols = W // 2, H // 2, 4
@@ -180,7 +187,7 @@ def preview(image, seed, fit_mode, outdir: Path, every: int, look: Look = Look()
     for i, k in enumerate(sorted(hours)):
         x, y = 10 + (i % cols) * (tw + 10), 10 + (i // cols) * (th + 26)
         cs.paste(hours[k].resize((tw, th), Image.LANCZOS), (x, y))
-        dd.text((x, y + th + 6), f"hour {k // 60}  -  {events[k - 1]['phase']}", fill=(225, 225, 225))
+        dd.text((x, y + th + 6), f"hour {k // 60}  -  {PHASE_NAMES[look.medium][events[k - 1]['phase']]}", fill=(225, 225, 225))
     cs.save(outdir / "contact_sheet.png")
     print("wrote", ", ".join(p.name for p in sorted(outdir.iterdir())))
 
@@ -190,6 +197,8 @@ def main():
     ap.add_argument("--image", help="image file, or a folder (one picture per day); not needed for `check`")
     ap.add_argument("--seed", type=int, default=None, help="fixed seed (default: the date)")
     ap.add_argument("--fit", choices=["crop", "pad"], default="crop", help="fill the sheet, or keep the whole image")
+    ap.add_argument("--medium", choices=MEDIA, default="pencil",
+                    help="pencil sketch on animation paper, or palette-knife painting on a blank canvas")
     ap.add_argument("--detail", type=float, default=1.0, metavar="X",
                     help="more fine lines and tighter hatching above 1.0, fewer below (0.5-2)")
     ap.add_argument("--contrast", type=float, default=1.0, metavar="X",
@@ -207,12 +216,12 @@ def main():
     sk = sub.add_parser("bake", help="break down an image (or every image in a folder) ahead of time")
     sk.add_argument("--to", default=None, help=argparse.SUPPRESS)
     sk.add_argument("--size", default="800x480", help="display size the frames are made for")
-    sk.add_argument("--gamma", type=float, default=2.4)
+    sk.add_argument("--gamma", type=float, default=None)
     sk.add_argument("--gray", action="store_true", help="greyscale frames instead of 1-bit")
     sk.add_argument("--cache", default="~/.cache/a-day-in-lines")
     sf = sub.add_parser("frame", help="the sheet after k minutes")
     sf.add_argument("k", type=int); sf.add_argument("-o", "--out", default="frame.png")
-    sf.add_argument("--mono", action="store_true"); sf.add_argument("--gamma", type=float, default=2.4)
+    sf.add_argument("--mono", action="store_true"); sf.add_argument("--gamma", type=float, default=None)
     sv = sub.add_parser("preview", help="final frame, hourly contact sheet, timelapse")
     sv.add_argument("-o", "--outdir", default="preview")
     sv.add_argument("--every", type=int, default=6)
@@ -220,7 +229,7 @@ def main():
     sc.add_argument("--display", default="file", help="'file' or 'waveshare:<module>'")
     sc.add_argument("--out", default="check.png")
     sc.add_argument("--size", default="800x480")
-    sc.add_argument("--gamma", type=float, default=2.4)
+    sc.add_argument("--gamma", type=float, default=None)
     sr = sub.add_parser("run", help="drive the display")
     sr.add_argument("--display", default="file", help="'file' or 'waveshare:<module>', e.g. waveshare:epd7in5_V2")
     sr.add_argument("--out", default="current.png")
@@ -234,7 +243,7 @@ def main():
     sr.add_argument("--scan-every", type=int, default=60, metavar="SEC",
                     help="how often to look for new pictures in the folder")
     sr.add_argument("--mono", action=argparse.BooleanOptionalAction, default=True)
-    sr.add_argument("--gamma", type=float, default=2.4, help="darken mid-tones before 1-bit dithering")
+    sr.add_argument("--gamma", type=float, default=None, help="darken mid-tones before 1-bit dithering (default 2.4 pencil, 1.6 paint)")
     sr.add_argument("--upload-key", default=None, metavar="KEY",
                     help="the key uploads need, from the viewer opened as /?key=KEY "
                          "(default: one is made and kept in the cache, and printed at start-up)")
@@ -261,10 +270,10 @@ def main():
     if args.cmd == "bake":
         size = tuple(map(int, args.size.split("x")))
         if args.to:                                   # one image, called by the watcher
-            bake_image(Path(args.image), seed, args.fit, Path(args.to), size, args.gamma, not args.gray, look_of(args))
+            bake_image(Path(args.image), seed, args.fit, Path(args.to), size, gamma_of(args), not args.gray, look_of(args))
             return
         lib = Library(Path(args.cache).expanduser(), Path(args.image).expanduser(), args.fit, args.seed,
-                      size, args.gamma, not args.gray, look_of(args))
+                      size, gamma_of(args), not args.gray, look_of(args))
         lib.scan()
         todo = lib.unbaked()
         print(f"{len(lib.data['images'])} pictures, {len(todo)} to break down")
@@ -277,21 +286,21 @@ def main():
     if args.cmd == "plan":
         st = dt.datetime.strptime(args.start, "%H:%M").time()
         t0, dur = dt.datetime.combine(today, st), window(st, parse_end(args.end))
-        for i, e in enumerate(build_plan(image, seed, args.fit, look_of(args))):
+        for i, e in enumerate(plan(image, seed, args.fit, look_of(args))):
             print(f"{i + 1:3d}  {t0 + dur * (i + 1) / TOTAL:%H:%M}  {e['phase']:<12} "
                   f"{e['label']:<24} {len(e['strokes']):3d} strokes")
     elif args.cmd == "breakdown":
         st = dt.datetime.strptime(args.start, "%H:%M").time()
         breakdown(image, seed, args.fit, Path(args.outdir), st, args.frames, window(st, parse_end(args.end)), look_of(args))
     elif args.cmd == "frame":
-        events = build_plan(image, seed, args.fit, look_of(args))
-        sh = Sheet(seed)
+        events = plan(image, seed, args.fit, look_of(args))
+        sh = new_sheet(look_of(args), seed)
         for e in events[:args.k]:
             sh.draw_event(e)
-        (dither_1bit(sh.gray(), args.gamma) if args.mono else sh.paper((W, H))).save(args.out)
+        (dither_1bit(sh.gray(), gamma_of(args)) if args.mono else sh.paper((W, H))).save(args.out)
         print(args.out)
     elif args.cmd == "preview":
-        preview(image, seed, args.fit, Path(args.outdir), args.every, look_of(args))
+        preview(image, seed, args.fit, Path(args.outdir), args.every, look_of(args), gamma_of(args))
     elif args.cmd == "run":
         run(args)
 

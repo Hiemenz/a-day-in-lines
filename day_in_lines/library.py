@@ -13,8 +13,9 @@ from PIL import Image, ImageOps
 
 from .constants import BAKE_VERSION, H, IMG_EXT, MAX_UPLOAD_PIXELS, TOTAL, UPLOAD_EXT, W
 from .export import viewer_plan
-from .planner import Look, build_plan
-from .render import Sheet, dither_1bit
+from .media import new_sheet, plan
+from .planner import Look
+from .render import dither_1bit
 
 
 def image_hash(path: Path) -> str:
@@ -174,7 +175,7 @@ class Library:
             import subprocess
             cmd = [sys.executable, str(Path(__file__).resolve().parent.parent / "a_day_in_lines.py"), "--image", str(img), "--fit", self.fit,
                    "--seed", str(self.seed(h)),
-                   "--detail", str(self.look.detail), "--contrast", str(self.look.contrast),
+                   "--detail", str(self.look.detail), "--contrast", str(self.look.contrast), "--medium", self.look.medium,
                    "bake", "--to", str(out),
                    "--size", "x".join(map(str, self.size)), "--gamma", str(self.gamma)] + ([] if self.mono else ["--gray"])
             r = subprocess.run(cmd, preexec_fn=lambda: os.nice(15), capture_output=True, text=True)
@@ -344,15 +345,15 @@ def _bake_image(image, seed, fit, out, size, gamma, mono, look):
     tmp = out.with_name(f".{out.name}.{os.getpid()}.part")
     shutil.rmtree(tmp, ignore_errors=True)
     (tmp / "frames").mkdir(parents=True)
-    events = build_plan(image, seed, fit, look)
+    events = plan(image, seed, fit, look)
     (tmp / "viewer.json").write_text(viewer_plan(events))
-    sh = Sheet(seed)
+    sh = new_sheet(look, seed)
     for k in range(TOTAL + 1):
         if k:
             sh.draw_event(events[k - 1])
         g = sh.gray(tuple(size))
         (dither_1bit(g, gamma) if mono else g).save(tmp / "frames" / f"{k:03d}.png")
-    meta = {"name": image.stem, "seed": seed, "size": list(size), "baked": dt.datetime.now().isoformat(timespec="seconds"),
+    meta = {"name": image.stem, "seed": seed, "medium": look.medium, "size": list(size), "baked": dt.datetime.now().isoformat(timespec="seconds"),
             "events": [[e["phase"], e["label"], len(e["strokes"])] for e in events]}
     (tmp / "meta.json").write_text(json.dumps(meta))
     if out.exists():
