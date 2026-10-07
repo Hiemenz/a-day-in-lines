@@ -60,6 +60,7 @@ button:focus-visible, select:focus-visible, input:focus-visible, .row:focus-visi
 #pick, #send { background: var(--blue); color: #fff; border-color: var(--blue) }
 #sendbar { display: inline-flex; flex-wrap: wrap; gap: 10px }
 #sendbar[hidden] { display: none }
+#sendbar .fin { display: inline-flex; align-items: center; gap: 6px; color: var(--muted) }
 .live { color: var(--blue); font-weight: 500 }
 #file { position: absolute; width: 1px; height: 1px; opacity: 0 }
 .busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(246,242,231,.82); color: #2a2c31; font: 500 14px var(--mono); text-align: center; padding: 16px }
@@ -117,6 +118,8 @@ aside h2 small { font: 400 11px var(--mono); color: var(--muted); letter-spacing
       </select>
       <span id="sendbar" hidden>
         <select id="when" aria-label="When the display starts drawing it"></select>
+        <input type="time" id="at" aria-label="Start at this time" hidden>
+        <label class="fin">Finish by <input type="time" id="finish" aria-label="Finish by this time (optional)"></label>
         <button id="send">Send to display</button>
       </span>
       <p id="srcnote">Showing the sample tanker sketch. Pick or drop any photo or drawing and it is broken into 720 minutes of lines here, in your browser.</p>
@@ -161,6 +164,7 @@ aside h2 small { font: 400 11px var(--mono); color: var(--muted); letter-spacing
 const SAMPLE = /*PLAN*/[];
 const LIVE = /*LIVE*/null;
 const BASE = LIVE ? LIVE.startMin : 7 * 60;
+const PER = LIVE && LIVE.perMin ? LIVE.perMin : 1;      // minutes per drawing event
 const PH = { c: "Composition", l: "Linework", s: "Shading", f: "Finishing" };
 const PHV = { c: "--ph-c", l: "--ph-l", s: "--ph-s", f: "--ph-f" };
 const N = 720, CW = 1600, CH = 960, W = 800, H = 480;
@@ -607,7 +611,7 @@ function highlight(i, upto) {
   const ss = PLAN[i][2], m = upto ?? ss.length, col = css("--blue") || "#2f6fd6";
   for (let j = 0; j < m; j++) stroke(bx, ss[j], col, 1.6);
 }
-const hhmm = m => { const t = (BASE + m) % 1440; return String(Math.floor(t / 60)).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0"); };
+const hhmm = m => { const t = Math.round(BASE + m * PER) % 1440; return String(Math.floor(t / 60)).padStart(2, "0") + ":" + String(t % 60).padStart(2, "0"); };
 const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
 function label(m) {
   $("clock").textContent = hhmm(m);
@@ -736,7 +740,7 @@ for (const el of [drop, sheet]) {
 }
 
 const hh = m => String(Math.floor(m / 60) % 24).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
-$("ticks").innerHTML = [0, 180, 360, 540, 720].map(m => `<span>${hh(BASE + m)}</span>`).join("");
+$("ticks").innerHTML = [0, 180, 360, 540, 720].map(m => `<span>${hh(Math.round(BASE + m * PER))}</span>`).join("");
 
 if (!LIVE) {
   // open on the sample, mid-morning, linework under way
@@ -747,10 +751,11 @@ if (!LIVE) {
   const showLive = () => { setPlan(livePlan, LIVE.k); $("sendbar").hidden = true; $("nowbtn").hidden = true; liveText(); };
   const liveText = () => {
     const tag = document.createElement("span"); tag.className = "live"; tag.textContent = "Live on your display";
-    $("sub").replaceChildren(tag, `: ${LIVE.image}, started at ${LIVE.start}. New lines appear here as the display draws them.`);
+    $("sub").replaceChildren(tag, `: ${LIVE.image}, started at ${LIVE.start}, finishing at ${LIVE.finish}. New lines appear here as the display draws them.`);
     $("srcnote").textContent = "Pick or drop any image to preview its breakdown, then send it to the display.";
   };
-  $("when").innerHTML = `<option value="now">Start drawing now</option><option value="next">Start at ${LIVE.next} tomorrow</option>`;
+  $("when").innerHTML = `<option value="now">Start drawing now</option><option value="next">Start at ${LIVE.next} tomorrow</option><option value="at">Start at a time…</option>`;
+  $("when").onchange = () => { $("at").hidden = $("when").value !== "at"; if (!$("at").hidden && !$("at").value) $("at").value = LIVE.next; };
   $("nowbtn").onclick = showLive;
   showLive();
   const following = () => PLAN === livePlan && !playing && !anim && k === LIVE.k;
@@ -770,12 +775,15 @@ if (!LIVE) {
     $("send").disabled = true; $("srcnote").textContent = "Sending to the display…";
     try {
       const key = new URLSearchParams(location.search).get("key") || "";
-      const r = await fetch("upload?start=" + $("when").value + "&key=" + encodeURIComponent(key), { method: "POST", body: lastFile,
+      const when = $("when").value === "at" ? $("at").value : $("when").value;
+      if (!when) throw new Error("choose a start time");
+      const r = await fetch("upload?start=" + encodeURIComponent(when) + "&end=" + encodeURIComponent($("finish").value)
+        + "&key=" + encodeURIComponent(key), { method: "POST", body: lastFile,
         headers: { "X-Filename": encodeURIComponent(lastFile.name) } });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || r.statusText);
-      $("srcnote").textContent = j.now ? `Sent. The display is starting ${lastName} on a blank sheet now; this page will switch over when it does.`
-        : `Sent. The display finishes what it's drawing, then starts ${lastName} at ${j.start}.`;
+      $("srcnote").textContent = j.now ? `Sent. The display is starting ${lastName} on a blank sheet now, finishing ${j.end}; this page will switch over when it does.`
+        : `Sent. The display starts ${lastName} at ${j.start} and finishes it by ${j.end}.`;
       $("sendbar").hidden = true;
       if (j.now) { const w = setInterval(poll, 3000); setTimeout(() => clearInterval(w), 120000); }
     } catch (e) {

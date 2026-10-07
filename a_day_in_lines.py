@@ -26,6 +26,10 @@ Commands
   python3 a_day_in_lines.py preview --image ship.png -o preview/
   python3 a_day_in_lines.py run     --image ship.png --display file
   python3 a_day_in_lines.py run     --image ~/pictures/ --display waveshare:epd7in5_V2
+  python3 a_day_in_lines.py run     --image ~/pictures/ --start 09:00 --end 17:00
+
+The 720 events are spread evenly from --start to --end (default: 12 hours, one a
+minute), so a shorter day adds several per update and a longer one fewer.
 
 --image can be a folder: a different picture is chosen each day.
 
@@ -941,21 +945,21 @@ def viewer_html(events, live=None, plan_json=None) -> str:
     return fill_live(viewer_page(plan_json if plan_json is not None else viewer_plan(events)), live)
 
 
-def write_xsheet(events, path: Path, start: dt.time):
+def write_xsheet(events, path: Path, start: dt.time, dur=dt.timedelta(minutes=TOTAL)):
     t0 = dt.datetime.combine(dt.date.today(), start)
     with open(path, "w") as f:
         f.write("minute,time,phase,lines_added,strokes\n")
         for i, e in enumerate(events):
-            t = t0 + dt.timedelta(minutes=i + 1)
+            t = t0 + dur * (i + 1) / TOTAL
             f.write(f'{i + 1},{t:%H:%M},{e["phase"]},"{e["label"]}",{len(e["strokes"])}\n')
 
 
-def breakdown(image, seed, fit_mode, outdir: Path, start: dt.time, frames_every: int):
+def breakdown(image, seed, fit_mode, outdir: Path, start: dt.time, frames_every: int, dur=dt.timedelta(minutes=TOTAL)):
     """Everything the viewer shows, as files: the exposure sheet, an offline viewer
     page, and optionally the sheet at each iteration with that minute's new lines in blue."""
     outdir.mkdir(parents=True, exist_ok=True)
     events = build_plan(image, seed, fit_mode)
-    write_xsheet(events, outdir / "exposure_sheet.csv", start)
+    write_xsheet(events, outdir / "exposure_sheet.csv", start, dur)
     (outdir / "day_in_lines.html").write_text(viewer_html(events))
     if frames_every:
         fd = outdir / "frames"
@@ -982,12 +986,33 @@ def breakdown(image, seed, fit_mode, outdir: Path, start: dt.time, frames_every:
 # ==========================================================================
 # The clock (with uploads that can take over the schedule)
 # ==========================================================================
-def drawing_day(now, start):
-    """(day, events that should be on the sheet). Before start time, show yesterday's finished sheet."""
+def parse_end(text):
+    return dt.datetime.strptime(text, "%H:%M").time() if text else None
+
+
+def window(start: dt.time, end: dt.time | None) -> dt.timedelta:
+    """How long a day's drawing takes: start to end (across midnight if need be).
+    No end: the classic 12 hours, one event a minute."""
+    if end is None:
+        return dt.timedelta(minutes=TOTAL)
+    d = (dt.datetime.combine(dt.date.min, end) - dt.datetime.combine(dt.date.min, start)) % dt.timedelta(days=1)
+    return d or dt.timedelta(days=1)
+
+
+def progress(now: dt.datetime, began: dt.datetime, dur: dt.timedelta) -> int:
+    """Events on the sheet: the 720 are spread evenly from `began` over `dur`."""
+    if now <= began:
+        return 0
+    return min(TOTAL, int((now - began) / dur * TOTAL))
+
+
+def drawing_day(now, start, dur=dt.timedelta(minutes=TOTAL)):
+    """(day, events that should be on the sheet). Before today's start, it is still
+    yesterday's drawing: finished, or still going if it runs past midnight."""
     s = now.replace(hour=start.hour, minute=start.minute, second=0, microsecond=0)
     if now < s:
-        return (now - dt.timedelta(days=1)).date(), TOTAL
-    return now.date(), min(TOTAL, int((now - s).total_seconds() // 60))
+        s -= dt.timedelta(days=1)
+    return s.date(), progress(now, s, dur)
 
 
 def next_start(after: dt.datetime, start: dt.time) -> dt.datetime:
@@ -995,26 +1020,27 @@ def next_start(after: dt.datetime, start: dt.time) -> dt.datetime:
     return s if s >= after else s + dt.timedelta(days=1)
 
 
-def override_end(began: dt.datetime, start: dt.time) -> dt.datetime:
-    """When an uploaded drawing hands the sheet back to the daily schedule. Normally
-    it stays up, finished, until the next start time, like any day's drawing. If it
-    finishes early in a day's drawing time, it hands back straight away and the
-    day's drawing joins in progress, rather than leaving the panel idle for a day."""
-    fin = began + dt.timedelta(minutes=TOTAL)
+def override_end(began: dt.datetime, fin: dt.datetime, start: dt.time, dur: dt.timedelta) -> dt.datetime:
+    """When an uploaded drawing that finishes at `fin` hands the sheet back to the
+    daily schedule. Normally it stays up, finished, until the next start time, like
+    any day's drawing. If it finishes early in a day's drawing time, it hands back
+    straight away and the day's drawing joins in progress, rather than leaving the
+    panel idle for a day."""
     s = dt.datetime.combine(fin.date(), start)
     if s > fin:
         s -= dt.timedelta(days=1)
-    return fin if fin - s < dt.timedelta(minutes=TOTAL // 2) else next_start(fin, start)
+    return fin if fin - s < dur / 2 else next_start(fin, start)
 
 
 class Overrides:
     """Uploads waiting for, or holding, the sheet: cache/override.json, a list of
-    {"hash", "start"} in the order they will be drawn. Each one waits for the one
-    before it to hand the sheet back."""
+    {"hash", "start", "end", "fixed"}. A fixed upload (start now, or at a chosen
+    time) takes the sheet at its start, cutting short whatever upload is drawing.
+    A queued one (at the next start time) waits until the sheet is free."""
 
-    def __init__(self, cache: Path, start: dt.time):
+    def __init__(self, cache: Path, start: dt.time, dur: dt.timedelta):
         import threading
-        self.file, self.start = cache / "override.json", start
+        self.file, self.start, self.dur = cache / "override.json", start, dur
         self.lock = threading.Lock()
 
     def _load(self):
@@ -1026,7 +1052,10 @@ class Overrides:
             self.file.unlink(missing_ok=True)
             return []
         ovs = ovs if isinstance(ovs, list) else [ovs]          # older single-override file
-        return [o for o in ovs if isinstance(o, dict) and "hash" in o and "start" in o]
+        ovs = [o for o in ovs if isinstance(o, dict) and "hash" in o and "start" in o]
+        for o in ovs:                                          # older entries: the default length
+            o.setdefault("end", (dt.datetime.fromisoformat(o["start"]) + self.dur).isoformat())
+        return ovs
 
     def _save(self, ovs):
         if not ovs:
@@ -1036,54 +1065,71 @@ class Overrides:
         tmp.write_text(json.dumps(ovs))
         tmp.replace(self.file)
 
+    @staticmethod
+    def _t(o, k):
+        return dt.datetime.fromisoformat(o[k])
+
+    def _hands_back(self, o):
+        return override_end(self._t(o, "start"), self._t(o, "end"), self.start, self.dur)
+
+    def _move(self, o, to):
+        o["end"], o["start"] = (to + (self._t(o, "end") - self._t(o, "start"))).isoformat(), to.isoformat()
+
     def _chain(self, ovs):
-        """Push each upload back until the one before it has handed the sheet back."""
-        for prev, o in zip(ovs, ovs[1:]):
-            end = override_end(dt.datetime.fromisoformat(prev["start"]), self.start)
-            if dt.datetime.fromisoformat(o["start"]) < end:
-                o["start"] = next_start(end, self.start).isoformat()
+        """Queued uploads wait until the sheet is free, including for fixed uploads
+        that would otherwise cut them short."""
+        for _ in range(4 * len(ovs) + 1):
+            ovs.sort(key=lambda o: self._t(o, "start"))
+            moved = False
+            for prev, o in zip(ovs, ovs[1:]):
+                free = self._hands_back(prev)
+                if self._t(o, "start") >= free:
+                    continue
+                if not o.get("fixed"):
+                    self._move(o, next_start(free, self.start)); moved = True; break
+                if not prev.get("fixed") and self._t(prev, "end") > self._t(o, "start"):
+                    self._move(prev, next_start(self._hands_back(o), self.start)); moved = True; break
+            if not moved:
+                break
         return ovs
 
-    def add(self, h, now_: bool, now: dt.datetime) -> dt.datetime:
+    def add(self, h, begin: dt.datetime, fin: dt.datetime, fixed: bool):
         with self.lock:
             ovs = self._load()
-            if now_:      # replaces whatever upload is on the sheet; queued ones move back
-                ovs = [{"hash": h, "start": now.isoformat()}] + \
-                      [o for o in ovs if dt.datetime.fromisoformat(o["start"]) > now]
-                new = ovs[0]
-            else:
-                new = {"hash": h, "start": next_start(now + dt.timedelta(minutes=1), self.start).isoformat()}
-                ovs.append(new)
+            new = {"hash": h, "start": begin.isoformat(), "end": fin.isoformat(), "fixed": fixed}
+            ovs.append(new)
             self._save(self._chain(ovs))
-            return dt.datetime.fromisoformat(new["start"])
+            return self._t(new, "start"), self._t(new, "end")
 
     def current(self, now: dt.datetime, lib: Library):
-        """The upload on the sheet now, as (hash, start), or None. Drops finished ones."""
+        """The upload on the sheet now, as (hash, start, end), or None. Drops finished
+        ones, and ones a later fixed upload has cut short."""
         with self.lock:
             ovs = self._load()
-            keep = [o for o in ovs if lib.usable(o["hash"])
-                    and now < override_end(dt.datetime.fromisoformat(o["start"]), self.start)]
+            keep = [o for o in ovs if lib.usable(o["hash"]) and now < self._hands_back(o)]
+            started = [o for o in keep if self._t(o, "start") <= now]
+            active = max(started, key=lambda o: self._t(o, "start")) if started else None
+            if active:
+                keep = [o for o in keep if o is active or self._t(o, "start") > now]
             if keep != ovs:
                 self._save(self._chain(keep))
-            for o in keep:
-                began = dt.datetime.fromisoformat(o["start"])
-                if began <= now:
-                    return o["hash"], began
+        if active:
+            return active["hash"], self._t(active, "start"), self._t(active, "end")
         return None
 
 
-def schedule(now, start, overrides: Overrides, lib: Library):
-    """What should be on the sheet now: (key, image hash, k, start datetime)."""
+def schedule(now, start, dur, overrides: Overrides, lib: Library):
+    """What should be on the sheet now: (key, image hash, k, start datetime, end datetime)."""
     cur = overrides.current(now, lib)
     if cur:
-        h, began = cur
-        k = min(TOTAL, int((now - began).total_seconds() // 60))
-        return f"upload:{began.isoformat()}:{h}", h, k, began
-    day, k = drawing_day(now, start)
+        h, began, fin = cur
+        return f"upload:{began.isoformat()}:{h}", h, progress(now, began, fin - began), began, fin
+    day, k = drawing_day(now, start, dur)
     h = lib.pick(day)
     if h is None:
-        return None, None, 0, None
-    return f"day:{day}:{h}", h, k, dt.datetime.combine(day, start)
+        return None, None, 0, None, None
+    began = dt.datetime.combine(day, start)
+    return f"day:{day}:{h}", h, k, began, began + dur
 
 
 class Live:
@@ -1097,10 +1143,12 @@ class Live:
         self.k = 0
         self.name = ""
         self.started = None
+        self.finish = None
         self.html = None
 
 
-def serve(live: Live, port: int, overrides: Overrides, start: dt.time, lib: Library, upload_key=None):
+def serve(live: Live, port: int, overrides: Overrides, start: dt.time, dur: dt.timedelta, lib: Library,
+          upload_key=None):
     import hmac
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1131,6 +1179,8 @@ def serve(live: Live, port: int, overrides: Overrides, start: dt.time, lib: Libr
                         live.html = (live.key, viewer_page(plan))
                     info = dict(key=live.key, k=live.k, image=live.name,          # the minute is filled in fresh
                                 start=live.started.strftime("%H:%M"), startMin=live.started.hour * 60 + live.started.minute,
+                                finish=live.finish.strftime("%H:%M"),
+                                perMin=(live.finish - live.started).total_seconds() / 60 / TOTAL,
                                 next=start.strftime("%H:%M"), needsKey=bool(upload_key))
                     return self._send(200, fill_live(live.html[1], info), "text/html; charset=utf-8")
                 if path == "/state.json":
@@ -1153,11 +1203,23 @@ def serve(live: Live, port: int, overrides: Overrides, start: dt.time, lib: Libr
                 h = lib.add_upload(data, name)
             except ValueError as e:
                 return self._send(400, json.dumps({"error": str(e)}))
-            when = q.get("start", ["now"])[0]
+            when, until = q.get("start", ["now"])[0], q.get("end", [""])[0]
             now = dt.datetime.now().replace(second=0, microsecond=0)
-            begin = overrides.add(h, when == "now", now)
+            try:
+                if when == "now":
+                    begin, fixed = now, True
+                elif when == "next":
+                    begin, fixed = next_start(now + dt.timedelta(minutes=1), start), False
+                else:                                  # a chosen time: the next time it comes round
+                    begin, fixed = next_start(now, dt.datetime.strptime(when, "%H:%M").time()), True
+                fin = (next_start(begin + dt.timedelta(minutes=1), dt.datetime.strptime(until, "%H:%M").time())
+                       if until else begin + dur)
+            except ValueError:
+                return self._send(400, '{"error":"Times must look like 14:30."}')
+            begin, fin = overrides.add(h, begin, fin, fixed)
             live.wake.set()
-            self._send(200, json.dumps({"ok": True, "start": begin.strftime("%a %H:%M"), "now": when == "now"}))
+            self._send(200, json.dumps({"ok": True, "start": begin.strftime("%a %H:%M"), "end": fin.strftime("%a %H:%M"),
+                                        "now": begin <= now}))
 
     srv = ThreadingHTTPServer(("0.0.0.0", port), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -1174,18 +1236,21 @@ def run(args):
     else:
         sys.exit(f"unknown display {args.display}")
     start = dt.datetime.strptime(args.start, "%H:%M").time()
+    dur = window(start, parse_end(args.end))
     lib = Library(cache, Path(args.image).expanduser(), args.fit, args.seed, disp.size, args.gamma, args.mono)
     lib.scan()
     live = Live()
     lib.watch(args.scan_every)
-    overrides = Overrides(cache, start)
+    overrides = Overrides(cache, start, dur)
     if args.serve:
-        serve(live, args.serve, overrides, start, lib, args.upload_key)
+        serve(live, args.serve, overrides, start, dur, lib, args.upload_key)
+    print(f"drawing each day {start:%H:%M}-{(dt.datetime.combine(dt.date.min, start) + dur):%H:%M}"
+          f" ({dur.total_seconds() / 60 / TOTAL:.2g} min per drawing event)", flush=True)
 
     key, shown, since_full = None, -1, 0
     while True:
         try:
-            key, shown, since_full = tick(args, disp, lib, live, overrides, start, key, shown, since_full)
+            key, shown, since_full = tick(args, disp, lib, live, overrides, start, dur, key, shown, since_full)
         except Exception as e:           # a bad picture or a display hiccup must not stop the clock
             print(f"error: {e}; trying again shortly", flush=True)
             key = None                   # redraw in full once it works again
@@ -1193,10 +1258,10 @@ def run(args):
         live.wake.clear()
 
 
-def tick(args, disp, lib, live, overrides, start, key, shown, since_full):
+def tick(args, disp, lib, live, overrides, start, dur, key, shown, since_full):
     """One minute of the clock: put the right frame up, then wait for the next minute."""
     now = dt.datetime.now()
-    new_key, h, k, started = schedule(now, start, overrides, lib)
+    new_key, h, k, started, finish = schedule(now, start, dur, overrides, lib)
     if new_key is None:
         print(f"no pictures yet in {lib.src}; waiting", flush=True)
         live.wake.wait(30)
@@ -1216,7 +1281,8 @@ def tick(args, disp, lib, live, overrides, start, key, shown, since_full):
         label = meta["events"][k - 1][1] if k else "blank sheet"
         print(f"{now:%H:%M}  {k:3d}/{TOTAL}  {meta['name']}  {label}", flush=True)
     with live.lock:
-        live.key, live.hash, live.k, live.name, live.started = key, h, k, lib.meta(h)["name"], started
+        live.key, live.hash, live.k, live.name = key, h, k, lib.meta(h)["name"]
+        live.started, live.finish = started, finish
     live.wake.wait(max(1, 60 - dt.datetime.now().second + 0.5))
     return key, shown, since_full
 
@@ -1257,9 +1323,11 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("plan", help="print the 720-minute schedule")
     sp.add_argument("--start", default="07:00")
+    sp.add_argument("--end", default=None, help="when the drawing should be finished (default: 12 hours after --start)")
     sb = sub.add_parser("breakdown", help="exposure sheet, viewer page, and per-minute frames for an image")
     sb.add_argument("-o", "--outdir", default="breakdown")
     sb.add_argument("--start", default="07:00")
+    sb.add_argument("--end", default=None, help="when the drawing should be finished (default: 12 hours after --start)")
     sb.add_argument("--frames", type=int, default=0, metavar="N",
                     help="also save the sheet every N minutes with that minute's new lines in blue (1 = all 720)")
     sk = sub.add_parser("bake", help="break down an image (or every image in a folder) ahead of time")
@@ -1279,6 +1347,8 @@ def main():
     sr.add_argument("--out", default="current.png")
     sr.add_argument("--size", default="800x480")
     sr.add_argument("--start", default="07:00", help="when the drawing begins each day")
+    sr.add_argument("--end", default=None, metavar="HH:MM",
+                    help="when each day's drawing is finished (default: 12 hours after --start, one event a minute)")
     sr.add_argument("--cache", default="~/.cache/a-day-in-lines")
     sr.add_argument("--serve", type=int, default=0, metavar="PORT",
                     help="serve the viewer on this port: watch live, upload any image from your phone")
@@ -1313,13 +1383,14 @@ def main():
         return
     image = pick_image(Path(args.image).expanduser(), today)
     if args.cmd == "plan":
-        t0 = dt.datetime.combine(today, dt.datetime.strptime(args.start, "%H:%M").time())
+        st = dt.datetime.strptime(args.start, "%H:%M").time()
+        t0, dur = dt.datetime.combine(today, st), window(st, parse_end(args.end))
         for i, e in enumerate(build_plan(image, seed, args.fit)):
-            print(f"{i + 1:3d}  {t0 + dt.timedelta(minutes=i + 1):%H:%M}  {e['phase']:<12} "
+            print(f"{i + 1:3d}  {t0 + dur * (i + 1) / TOTAL:%H:%M}  {e['phase']:<12} "
                   f"{e['label']:<24} {len(e['strokes']):3d} strokes")
     elif args.cmd == "breakdown":
-        breakdown(image, seed, args.fit, Path(args.outdir),
-                  dt.datetime.strptime(args.start, "%H:%M").time(), args.frames)
+        st = dt.datetime.strptime(args.start, "%H:%M").time()
+        breakdown(image, seed, args.fit, Path(args.outdir), st, args.frames, window(st, parse_end(args.end)))
     elif args.cmd == "frame":
         events = build_plan(image, seed, args.fit)
         sh = Sheet(seed)
