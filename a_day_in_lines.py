@@ -10,13 +10,14 @@ minute: 720 drawing events, nothing ever erased or redrawn.
 The day unfolds the way an animator works at a desk:
 
   minutes   1-40    composition    faint, loose construction lines of the big shapes
-  minutes  41-260   linework       contours, coarse to fine, strongest first
-  minutes 261-670   shading        hatching built up in layers, light to dark
+  minutes  41-270   linework       contours, coarse to fine, strongest first
+  minutes 271-670   shading        hatching built up in layers, light to dark
   minutes 671-720   finishing      darkest accents, re-stated edges, small marks
 
-The plan is deterministic for a given image + seed, so after a reboot the sheet
-is rebuilt stroke-for-stroke. By default the seed is the date, so the same
-picture drawn on a different day comes out in a slightly different hand.
+The plan is deterministic for a given image + seed. On the display (`run`,
+`bake`) each picture's seed comes from its contents, so it is broken down once
+and reused for good. The one-off commands (`plan`, `frame`, `preview`,
+`breakdown`) default to the date as the seed. `--seed` fixes it everywhere.
 
 Commands
 --------
@@ -54,6 +55,7 @@ TOTAL = 720              # drawing events per day
 PHASES = (("composition", 40), ("linework", 230), ("shading", None), ("finishing", 50))
 PAPER_RGB = np.array([0.965, 0.948, 0.905], np.float32)   # preview only
 IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
+UPLOAD_EXT = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp", "BMP": ".bmp", "TIFF": ".tif"}
 
 
 # ==========================================================================
@@ -129,7 +131,11 @@ class Pen:
 # ==========================================================================
 def load_target(path: Path, fit="crop"):
     """Return (tone, gray): tone 0 = bare paper, 1 = darkest graphite."""
-    img = ImageOps.exif_transpose(Image.open(path)).convert("L")
+    img = ImageOps.exif_transpose(Image.open(path))
+    if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
+        rgba = img.convert("RGBA")              # transparent areas are paper, not black
+        img = Image.alpha_composite(Image.new("RGBA", rgba.size, (255, 255, 255, 255)), rgba)
+    img = img.convert("L")
     if fit == "pad":
         img = ImageOps.pad(img, (W, H), color=int(np.percentile(np.asarray(img), 95)))
     else:
@@ -484,8 +490,9 @@ class Library:
     """Watches the picture folder (and uploads), bakes each new image's 720-minute
     plan exactly once, and decides which picture each day gets.
 
-      cache/library.json          what's known: images, when added, when drawn, which day got which
-      cache/plans/<hash>-<fit>.pkl.gz   the baked plans (renames and moves never trigger a rebake)
+      cache/library.json   what's known: images, when added, when drawn, which day got which
+      cache/baked/<hash>-<fit>-<size>-<mono|gray>-g<gamma>-s<seed>/
+                           the baked frames (renames and moves never trigger a rebake)
     """
 
     def __init__(self, cache: Path, src: Path, fit: str, fixed_seed=None,
@@ -501,6 +508,7 @@ class Library:
         self.lock = threading.RLock()
         self._mem = {}
         self.baking = set()
+        self.failed = set()                        # couldn't be broken down this session; skipped
         try:
             self.data = json.loads(self.file.read_text())
         except Exception:
@@ -563,9 +571,12 @@ class Library:
         img = self.data["images"].get(h)
         return img is not None and Path(img["path"]).exists()
 
+    def usable(self, h):
+        return self.present(h) and h not in self.failed
+
     def dir(self, h):
         w, hh = self.size
-        return self.plans / f"{h}-{self.fit}-{w}x{hh}-{'mono' if self.mono else 'gray'}-g{self.gamma:g}"
+        return self.plans / f"{h}-{self.fit}-{w}x{hh}-{'mono' if self.mono else 'gray'}-g{self.gamma:g}-s{self.seed(h)}"
 
     def ready(self, h):
         return (self.dir(h) / "meta.json").exists()
@@ -583,7 +594,7 @@ class Library:
 
     def unbaked(self):
         with self.lock:
-            hs = [h for h in self.data["images"] if self.present(h) and not self.ready(h)]
+            hs = [h for h in self.data["images"] if self.usable(h) and not self.ready(h)]
         return sorted(hs, key=lambda h: self.data["images"][h]["added"])
 
     # ---- baking ----
@@ -597,16 +608,20 @@ class Library:
             if not busy:
                 self.baking.add(h)
         if busy:                                   # the other thread is on it; wait for its result
-            for _ in range(900):
-                if self.ready(h) or h not in self.baking:
-                    break
+            while not self.ready(h) and h in self.baking:
                 time.sleep(1)
             return self.ready(h)
+        ok = False
         try:
-            return self._bake(h, background)
+            ok = self._bake(h, background)
+        except Exception as e:
+            print(f"could not break down {self.data['images'][h]['name']}: {e}", flush=True)
         finally:
             with self.lock:
                 self.baking.discard(h)
+                if not ok:
+                    self.failed.add(h)
+        return ok
 
     def _bake(self, h, background):
         img = Path(self.data["images"][h]["path"])
@@ -618,7 +633,8 @@ class Library:
                    "--size", "x".join(map(str, self.size)), "--gamma", str(self.gamma)] + ([] if self.mono else ["--gray"])
             r = subprocess.run(cmd, preexec_fn=lambda: os.nice(15), capture_output=True, text=True)
             if r.returncode:
-                print(f"could not break down {img.name}: {r.stderr.strip().splitlines()[-1:]}", flush=True)
+                err = (r.stderr.strip().splitlines() or [f"exit code {r.returncode}"])[-1]
+                print(f"could not break down {img.name}: {err}", flush=True)
             return self.ready(h)
         bake_image(img, self.seed(h), self.fit, out, self.size, self.gamma, self.mono)
         return True
@@ -635,9 +651,9 @@ class Library:
         with self.lock:
             d = str(day)
             h = self.data["days"].get(d)
-            if h and self.present(h):
+            if h and self.usable(h):
                 return h
-            cands = [h for h in self.data["images"] if self.present(h)]
+            cands = [h for h in self.data["images"] if self.usable(h)]
             if not cands:
                 return None
             ready = [h for h in cands if self.ready(h)] or cands[:1]   # first boot: bake one now
@@ -652,29 +668,40 @@ class Library:
             return h
 
     def add_upload(self, data: bytes, name: str) -> str:
-        stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in Path(name).stem)[:60] or "upload"
-        dest = self.uploads / f"{stem}{Path(name).suffix.lower() or '.jpg'}"
-        n = 2
-        while dest.exists():
-            dest = self.uploads / f"{stem}-{n}{Path(name).suffix.lower() or '.jpg'}"
-            n += 1
-        tmp = self.uploads / f".{dest.name}.part"
-        tmp.write_bytes(data)
+        import io
         try:
-            Image.open(tmp).verify()
+            with Image.open(io.BytesIO(data)) as im:
+                fmt = im.format
+                im.verify()
         except Exception:
-            tmp.unlink(missing_ok=True)
             raise ValueError("That file is not an image the display can read.")
+        ext = UPLOAD_EXT.get(fmt)
+        if ext is None:                            # e.g. GIF: store as PNG so the folder scan picks it up
+            with Image.open(io.BytesIO(data)) as im:
+                buf = io.BytesIO()
+                ImageOps.exif_transpose(im).save(buf, "PNG")
+            data, ext = buf.getvalue(), ".png"
+        stem = "".join(c if c.isalnum() or c in "-_" else "_" for c in Path(name).stem)[:60] or "upload"
         h = hashlib.sha1(data).hexdigest()[:16]
         with self.lock:
             if h in self.data["images"] and self.present(h):     # already have it
-                tmp.unlink()
                 return h
+            dest, n = self.uploads / f"{stem}{ext}", 2
+            while dest.exists():
+                dest, n = self.uploads / f"{stem}-{n}{ext}", n + 1
+            tmp = self.uploads / f".{dest.name}.part"
+            tmp.write_bytes(data)
             tmp.replace(dest)
             st = dest.stat()
-            self.data["files"][str(dest.resolve())] = {"sig": [st.st_size, int(st.st_mtime)], "hash": h}
-            self.data["images"][h] = {"path": str(dest.resolve()), "name": dest.stem,
-                                      "added": dt.datetime.now().isoformat(timespec="seconds"), "drawn": []}
+            key = str(dest.resolve())
+            self.data["files"][key] = {"sig": [st.st_size, int(st.st_mtime)], "hash": h}
+            img = self.data["images"].get(h)
+            if img:                                # known picture whose file had gone: keep its history
+                img["path"], img["name"] = key, dest.stem
+            else:
+                self.data["images"][h] = {"path": key, "name": dest.stem,
+                                          "added": dt.datetime.now().isoformat(timespec="seconds"), "drawn": []}
+            self.failed.discard(h)
             self.save()
         return h
 
@@ -709,6 +736,15 @@ def bake_image(image: Path, seed: int, fit: str, out: Path, size=(W, H), gamma=2
       meta.json                    name and the exposure sheet (written last = done)
 
     Displaying is then just opening frames/<minute>.png."""
+    import fcntl
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out.with_name(f".{out.name}.lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)      # another process (e.g. a manual `bake`) may be on it
+        if not (out / "meta.json").exists():
+            _bake_image(image, seed, fit, out, size, gamma, mono)
+
+
+def _bake_image(image, seed, fit, out, size, gamma, mono):
     import shutil
     tmp = out.with_name(f".{out.name}.{os.getpid()}.part")
     shutil.rmtree(tmp, ignore_errors=True)
@@ -832,14 +868,17 @@ class FileDisplay:
 class WaveshareDisplay:
     """Adapter over Waveshare's `waveshare_epd` python package."""
 
-    def __init__(self, module):
+    def __init__(self, module, gamma=2.4):
         import importlib
         self.epd = importlib.import_module(f"waveshare_epd.{module}").EPD()
         self.size = (self.epd.width, self.epd.height)
+        self.gamma = gamma
 
     def show(self, img, full=False):
         epd = self.epd
-        buf = epd.getbuffer(img.convert("1"))
+        if img.mode != "1":              # greyscale frames: same local dither, not Pillow's error diffusion
+            img = dither_1bit(img.convert("L"), self.gamma)
+        buf = epd.getbuffer(img)
         if full or not hasattr(epd, "display_Partial"):
             epd.init()
             epd.display(buf)
@@ -880,12 +919,26 @@ def viewer_plan(events) -> str:
     return json.dumps(out, separators=(",", ":"))
 
 
-def viewer_html(events, live=None, plan_json=None) -> str:
+def script_json(text: str) -> str:
+    """JSON that is safe inside a <script> block (a name can't close the tag)."""
+    return text.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def viewer_page(plan_json: str) -> str:
+    """The viewer with a plan in it; the live slot is left for fill_live."""
     tpl = (Path(__file__).with_name("viewer.html")).read_text()
     tpl = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
            '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
            '<style>body{margin:0}[hidden]{display:none!important}</style></head><body>' + tpl + '</body></html>')
-    return tpl.replace("/*PLAN*/[]", plan_json if plan_json is not None else viewer_plan(events)).replace("/*LIVE*/null", json.dumps(live))
+    return tpl.replace("/*PLAN*/[]", script_json(plan_json))
+
+
+def fill_live(page: str, live) -> str:
+    return page.replace("/*LIVE*/null", script_json(json.dumps(live)))
+
+
+def viewer_html(events, live=None, plan_json=None) -> str:
+    return fill_live(viewer_page(plan_json if plan_json is not None else viewer_plan(events)), live)
 
 
 def write_xsheet(events, path: Path, start: dt.time):
@@ -942,20 +995,90 @@ def next_start(after: dt.datetime, start: dt.time) -> dt.datetime:
     return s if s >= after else s + dt.timedelta(days=1)
 
 
-def schedule(now, start, cache: Path, lib: Library):
-    """What should be on the sheet now: (key, image hash, k, start datetime)."""
-    ov_f = cache / "override.json"
-    if ov_f.exists():
+def override_end(began: dt.datetime, start: dt.time) -> dt.datetime:
+    """When an uploaded drawing hands the sheet back to the daily schedule. Normally
+    it stays up, finished, until the next start time, like any day's drawing. If it
+    finishes early in a day's drawing time, it hands back straight away and the
+    day's drawing joins in progress, rather than leaving the panel idle for a day."""
+    fin = began + dt.timedelta(minutes=TOTAL)
+    s = dt.datetime.combine(fin.date(), start)
+    if s > fin:
+        s -= dt.timedelta(days=1)
+    return fin if fin - s < dt.timedelta(minutes=TOTAL // 2) else next_start(fin, start)
+
+
+class Overrides:
+    """Uploads waiting for, or holding, the sheet: cache/override.json, a list of
+    {"hash", "start"} in the order they will be drawn. Each one waits for the one
+    before it to hand the sheet back."""
+
+    def __init__(self, cache: Path, start: dt.time):
+        import threading
+        self.file, self.start = cache / "override.json", start
+        self.lock = threading.Lock()
+
+    def _load(self):
         try:
-            ov = json.loads(ov_f.read_text())
-            os_, h = dt.datetime.fromisoformat(ov["start"]), ov["hash"]
-            if now >= os_:
-                if now < next_start(os_ + dt.timedelta(minutes=TOTAL), start) and lib.present(h):
-                    k = min(TOTAL, int((now - os_).total_seconds() // 60))
-                    return f"upload:{ov['start']}:{h}", h, k, os_
-                ov_f.unlink()            # finished; back to the daily schedule
+            ovs = json.loads(self.file.read_text())
+        except FileNotFoundError:
+            return []
         except Exception:
-            ov_f.unlink(missing_ok=True)
+            self.file.unlink(missing_ok=True)
+            return []
+        ovs = ovs if isinstance(ovs, list) else [ovs]          # older single-override file
+        return [o for o in ovs if isinstance(o, dict) and "hash" in o and "start" in o]
+
+    def _save(self, ovs):
+        if not ovs:
+            self.file.unlink(missing_ok=True)
+            return
+        tmp = self.file.with_suffix(".tmp")
+        tmp.write_text(json.dumps(ovs))
+        tmp.replace(self.file)
+
+    def _chain(self, ovs):
+        """Push each upload back until the one before it has handed the sheet back."""
+        for prev, o in zip(ovs, ovs[1:]):
+            end = override_end(dt.datetime.fromisoformat(prev["start"]), self.start)
+            if dt.datetime.fromisoformat(o["start"]) < end:
+                o["start"] = next_start(end, self.start).isoformat()
+        return ovs
+
+    def add(self, h, now_: bool, now: dt.datetime) -> dt.datetime:
+        with self.lock:
+            ovs = self._load()
+            if now_:      # replaces whatever upload is on the sheet; queued ones move back
+                ovs = [{"hash": h, "start": now.isoformat()}] + \
+                      [o for o in ovs if dt.datetime.fromisoformat(o["start"]) > now]
+                new = ovs[0]
+            else:
+                new = {"hash": h, "start": next_start(now + dt.timedelta(minutes=1), self.start).isoformat()}
+                ovs.append(new)
+            self._save(self._chain(ovs))
+            return dt.datetime.fromisoformat(new["start"])
+
+    def current(self, now: dt.datetime, lib: Library):
+        """The upload on the sheet now, as (hash, start), or None. Drops finished ones."""
+        with self.lock:
+            ovs = self._load()
+            keep = [o for o in ovs if lib.usable(o["hash"])
+                    and now < override_end(dt.datetime.fromisoformat(o["start"]), self.start)]
+            if keep != ovs:
+                self._save(self._chain(keep))
+            for o in keep:
+                began = dt.datetime.fromisoformat(o["start"])
+                if began <= now:
+                    return o["hash"], began
+        return None
+
+
+def schedule(now, start, overrides: Overrides, lib: Library):
+    """What should be on the sheet now: (key, image hash, k, start datetime)."""
+    cur = overrides.current(now, lib)
+    if cur:
+        h, began = cur
+        k = min(TOTAL, int((now - began).total_seconds() // 60))
+        return f"upload:{began.isoformat()}:{h}", h, k, began
     day, k = drawing_day(now, start)
     h = lib.pick(day)
     if h is None:
@@ -977,7 +1100,8 @@ class Live:
         self.html = None
 
 
-def serve(live: Live, port: int, cache: Path, start: dt.time, lib: Library):
+def serve(live: Live, port: int, overrides: Overrides, start: dt.time, lib: Library, upload_key=None):
+    import hmac
     import threading
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import urlparse, parse_qs, unquote
@@ -1003,12 +1127,12 @@ def serve(live: Live, port: int, cache: Path, start: dt.time, lib: Library):
                         return self._send(503, "<p>The display is still breaking down its first picture. Reload in a minute.</p>",
                                           "text/html")
                     if live.html is None or live.html[0] != live.key:
-                        info = dict(key=live.key, k=live.k, image=live.name,
-                                    start=live.started.strftime("%H:%M"), startMin=live.started.hour * 60 + live.started.minute,
-                                    next=start.strftime("%H:%M"))
                         plan = (lib.dir(live.hash) / "viewer.json").read_text()
-                        live.html = (live.key, viewer_html(None, info, plan))
-                    return self._send(200, live.html[1], "text/html; charset=utf-8")
+                        live.html = (live.key, viewer_page(plan))
+                    info = dict(key=live.key, k=live.k, image=live.name,          # the minute is filled in fresh
+                                start=live.started.strftime("%H:%M"), startMin=live.started.hour * 60 + live.started.minute,
+                                next=start.strftime("%H:%M"), needsKey=bool(upload_key))
+                    return self._send(200, fill_live(live.html[1], info), "text/html; charset=utf-8")
                 if path == "/state.json":
                     return self._send(200, json.dumps(dict(key=live.key, k=live.k)))
             self._send(404, '{"error":"not found"}')
@@ -1017,6 +1141,9 @@ def serve(live: Live, port: int, cache: Path, start: dt.time, lib: Library):
             u = urlparse(self.path)
             if u.path != "/upload":
                 return self._send(404, '{"error":"not found"}')
+            q = parse_qs(u.query)
+            if upload_key and not hmac.compare_digest(q.get("key", [""])[0].encode(), upload_key.encode()):
+                return self._send(403, '{"error":"Sending pictures needs the key: open the page as /?key=..."}')
             n = int(self.headers.get("Content-Length") or 0)
             if not 0 < n <= 40_000_000:
                 return self._send(413, '{"error":"Images up to 40 MB, please."}')
@@ -1026,10 +1153,9 @@ def serve(live: Live, port: int, cache: Path, start: dt.time, lib: Library):
                 h = lib.add_upload(data, name)
             except ValueError as e:
                 return self._send(400, json.dumps({"error": str(e)}))
-            when = parse_qs(u.query).get("start", ["now"])[0]
+            when = q.get("start", ["now"])[0]
             now = dt.datetime.now().replace(second=0, microsecond=0)
-            begin = now if when == "now" else next_start(now + dt.timedelta(minutes=1), start)
-            (cache / "override.json").write_text(json.dumps({"hash": h, "start": begin.isoformat()}))
+            begin = overrides.add(h, when == "now", now)
             live.wake.set()
             self._send(200, json.dumps({"ok": True, "start": begin.strftime("%a %H:%M"), "now": when == "now"}))
 
@@ -1044,7 +1170,7 @@ def run(args):
     if args.display == "file":
         disp = FileDisplay(args.out, tuple(map(int, args.size.split("x"))))
     elif args.display.startswith("waveshare:"):
-        disp = WaveshareDisplay(args.display.split(":", 1)[1])
+        disp = WaveshareDisplay(args.display.split(":", 1)[1], args.gamma)
     else:
         sys.exit(f"unknown display {args.display}")
     start = dt.datetime.strptime(args.start, "%H:%M").time()
@@ -1052,35 +1178,47 @@ def run(args):
     lib.scan()
     live = Live()
     lib.watch(args.scan_every)
+    overrides = Overrides(cache, start)
     if args.serve:
-        serve(live, args.serve, cache, start, lib)
+        serve(live, args.serve, overrides, start, lib, args.upload_key)
 
     key, shown, since_full = None, -1, 0
     while True:
-        now = dt.datetime.now()
-        new_key, h, k, started = schedule(now, start, cache, lib)
-        if new_key is None:
-            print(f"no pictures yet in {lib.src}; waiting", flush=True)
-            live.wake.wait(30); live.wake.clear()
-            continue
-        lib.ensure(h)                    # normally already baked by the watcher
-        full = new_key != key
-        key = new_key
-        if k != shown or full:
-            since_full += 1
-            if args.full_refresh_every and since_full >= args.full_refresh_every:
-                full, since_full = True, 0
-            with Image.open(lib.frame(h, k)) as img:          # static: just open this minute's frame
-                img.load()
-                disp.show(img, full=full)
-            shown = k
-            meta = lib.meta(h)
-            label = meta["events"][k - 1][1] if k else "blank sheet"
-            print(f"{now:%H:%M}  {k:3d}/{TOTAL}  {meta['name']}  {label}", flush=True)
-        with live.lock:
-            live.key, live.hash, live.k, live.name, live.started = key, h, k, lib.meta(h)["name"], started
-        live.wake.wait(max(1, 60 - dt.datetime.now().second + 0.5))
+        try:
+            key, shown, since_full = tick(args, disp, lib, live, overrides, start, key, shown, since_full)
+        except Exception as e:           # a bad picture or a display hiccup must not stop the clock
+            print(f"error: {e}; trying again shortly", flush=True)
+            key = None                   # redraw in full once it works again
+            live.wake.wait(30)
         live.wake.clear()
+
+
+def tick(args, disp, lib, live, overrides, start, key, shown, since_full):
+    """One minute of the clock: put the right frame up, then wait for the next minute."""
+    now = dt.datetime.now()
+    new_key, h, k, started = schedule(now, start, overrides, lib)
+    if new_key is None:
+        print(f"no pictures yet in {lib.src}; waiting", flush=True)
+        live.wake.wait(30)
+        return key, shown, since_full
+    lib.ensure(h)                    # normally already baked by the watcher
+    full = new_key != key
+    key = new_key
+    if k != shown or full:
+        since_full += 1
+        if args.full_refresh_every and since_full >= args.full_refresh_every:
+            full, since_full = True, 0
+        with Image.open(lib.frame(h, k)) as img:          # static: just open this minute's frame
+            img.load()
+            disp.show(img, full=full)
+        shown = k
+        meta = lib.meta(h)
+        label = meta["events"][k - 1][1] if k else "blank sheet"
+        print(f"{now:%H:%M}  {k:3d}/{TOTAL}  {meta['name']}  {label}", flush=True)
+    with live.lock:
+        live.key, live.hash, live.k, live.name, live.started = key, h, k, lib.meta(h)["name"], started
+    live.wake.wait(max(1, 60 - dt.datetime.now().second + 0.5))
+    return key, shown, since_full
 
 
 def preview(image, seed, fit_mode, outdir: Path, every: int):
@@ -1148,6 +1286,8 @@ def main():
                     help="how often to look for new pictures in the folder")
     sr.add_argument("--mono", action=argparse.BooleanOptionalAction, default=True)
     sr.add_argument("--gamma", type=float, default=2.4, help="darken mid-tones before 1-bit dithering")
+    sr.add_argument("--upload-key", default=None, metavar="KEY",
+                    help="only accept uploads from the viewer opened as /?key=KEY (default: anyone on the network)")
     sr.add_argument("--full-refresh-every", type=int, default=0,
                     help="full (blinking) refresh every N updates to clear ghosting; 0 = never")
     args = ap.parse_args()
@@ -1185,7 +1325,7 @@ def main():
         sh = Sheet(seed)
         for e in events[:args.k]:
             sh.draw_event(e)
-        (dither_1bit(sh.gray(), args.gamma) if args.mono else sh.paper()).save(args.out)
+        (dither_1bit(sh.gray(), args.gamma) if args.mono else sh.paper((W, H))).save(args.out)
         print(args.out)
     elif args.cmd == "preview":
         preview(image, seed, args.fit, Path(args.outdir), args.every)
