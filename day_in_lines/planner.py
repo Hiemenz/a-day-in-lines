@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -12,7 +13,20 @@ from .constants import H, PHASES, TOTAL, W
 from .pen import Pen, length, resample
 
 
-def load_target(path: Path, fit="crop"):
+@dataclass(frozen=True)
+class Look:
+    """How the picture is read. detail > 1 draws more fine lines and tighter hatching;
+    contrast > 1 darkens the shading of flat, low-contrast pictures (both 1.0 = as before)."""
+    detail: float = 1.0
+    contrast: float = 1.0
+
+    @property
+    def suffix(self) -> str:
+        """Part of a baked folder's name; empty for the defaults so old bakes stay valid."""
+        return "" if self == Look() else f"-d{self.detail:g}-c{self.contrast:g}"
+
+
+def load_target(path: Path, fit="crop", contrast=1.0):
     """Return (tone, gray): tone 0 = bare paper, 1 = darkest graphite."""
     img = ImageOps.exif_transpose(Image.open(path))
     if img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info:
@@ -28,7 +42,7 @@ def load_target(path: Path, fit="crop"):
     ink = np.percentile(g, 0.7)
     tone = np.clip((paper - g) / max(paper - ink, 1e-3), 0, 1)
     tone = ndi.gaussian_filter(tone, 1.0)
-    return tone ** 0.95, g
+    return tone ** (0.95 / contrast), g
 
 
 def canny(gray, sigma, lo_pct, hi_pct):
@@ -205,10 +219,13 @@ def group_paths(paths, budget_len, radius, rng):
     return groups
 
 
-def build_plan(image: Path, seed: int, fit_mode="crop"):
+def build_plan(image: Path, seed: int, fit_mode="crop", look: Look = Look()):
     rng = np.random.default_rng([seed, 1])
     pen = Pen(rng)
-    tone, gray = load_target(image, fit_mode)
+    tone, gray = load_target(image, fit_mode, look.contrast)
+    d = look.detail
+    shift = (d - 1) * 4                   # percentile points: more detail keeps weaker edges
+    lo = lambda v: float(np.clip(v - shift, 50, 98))
     phases = {}
 
     # ---- composition: the big shapes, loosely --------------------------
@@ -223,8 +240,8 @@ def build_plan(image: Path, seed: int, fit_mode="crop"):
     phases["composition"] = comp
 
     # ---- linework: contours coarse -> fine --------------------------------
-    med, med_e = contour_paths(gray, tone, 2.6, 72, 93, 14, 110, rng)
-    fine, fine_e = contour_paths(gray, tone, 1.3, 80, 95, 10, 70, rng)
+    med, med_e = contour_paths(gray, tone, 2.6, lo(72), lo(93), 14, 110, rng)
+    fine, fine_e = contour_paths(gray, tone, 1.3 / d, lo(80), lo(95), 10, 70, rng)
     near_med = ndi.binary_dilation(med_e, iterations=2)
     fine = [p for p in fine if sample(near_med.astype(float), p["pts"]).mean() < .5]
     ridges = ridge_paths(gray, tone, rng)
@@ -256,7 +273,6 @@ def build_plan(image: Path, seed: int, fit_mode="crop"):
     noise = noise / (noise.std() + 1e-9) * .035
     soft = ndi.gaussian_filter(tone, 2.0)
     shade, accent = [], []
-    cell = 40
     base_angle = 50.0
     for li, (thr, spc, aoff, pr, maxlen, follow) in enumerate(layers):
         mask = ndi.binary_opening(soft > thr + noise, iterations=2)
@@ -264,10 +280,10 @@ def build_plan(image: Path, seed: int, fit_mode="crop"):
         if n:
             area = ndi.sum(mask, lab, index=np.arange(1, n + 1))
             mask = np.concatenate([[False], area >= 150])[lab]
-        cells = hatch_layer(pen, rng, mask, theta, coh, base_angle + aoff, spc, pr, maxlen, follow, cell)
+        items = hatch_layer(pen, rng, mask, theta, coh, base_angle + aoff, spc / d ** .5, pr, maxlen, follow)
         is_acc = li == len(layers) - 1
-        for key in sorted(cells, key=lambda k: (k[1] // 3, k[0], k[1])):
-            (accent if is_acc else shade).append(ev("finishing" if is_acc else "shading", names[li], cells[key]))
+        for grp in organic_groups(items, int(mask.sum()), rng):
+            (accent if is_acc else shade).append(ev("finishing" if is_acc else "shading", names[li], grp))
     # finishing also re-states the strongest dark edges with real pressure
     darkest = sorted(med + fine + ridges, key=lambda p: -(p["dark"] * 2 + p["score"] / 4000))[:40]
     for grp in group_paths(darkest, 90, 50, rng):
@@ -295,16 +311,16 @@ def build_plan(image: Path, seed: int, fit_mode="crop"):
     return events
 
 
-def hatch_layer(pen, rng, mask, theta, coh, angle, spc, pr, maxlen, follow, cell):
+def hatch_layer(pen, rng, mask, theta, coh, angle, spc, pr, maxlen, follow):
     """One layer of hatching: continuous parallel lines across the sheet, cut into
     hand-length strokes inside `mask`, each nudged toward the image's local flow.
-    Returns {cell: strokes} so each minute can draw one patch."""
+    Returns [(x, y, strokes)] so organic_groups can gather them into patches."""
     a = math.radians(angle)
     d = np.array([math.cos(a), math.sin(a)])
     n = np.array([-d[1], d[0]])
     c = np.array([W / 2, H / 2])
     R = math.hypot(W, H) / 2 + 4
-    cells = {}
+    items = []
     off = -R + rng.uniform(0, spc)
     while off < R:
         base = c + n * off
@@ -330,9 +346,43 @@ def hatch_layer(pen, rng, mask, theta, coh, angle, spc, pr, maxlen, follow, cell
                 aa = math.radians(angle + w * diff + rng.normal(0, 3))
                 dd = np.array([math.cos(aa), math.sin(aa)])
                 st = pen.line([m - dd * L / 2, m + dd * L / 2], p=pr, w=.9, wob=.3, jitter=.25)
-                cells.setdefault((xi // cell, yi // cell), []).extend(st)
+                if st:
+                    items.append((float(m[0]), float(m[1]), st))
         off += spc * rng.uniform(.85, 1.15)
-    return cells
+    return items
+
+
+def organic_groups(items, area, rng, patch_area=1600.0):
+    """Gather a layer's strokes into the patches a hand would work on, one per minute.
+
+    Patch centres are picked from the strokes themselves, so they follow where the
+    shading actually is rather than a lattice. Each patch gets its own stretch and
+    tilt, so its outline is a blob rather than a square or Voronoi polygon. Patches
+    are then visited by a wandering walk that tends to move to a neighbour, not by
+    sweeping row by row."""
+    if not items:
+        return []
+    pts = np.array([[x, y] for x, y, _ in items])
+    n = int(np.clip(round(area / patch_area), 1, len(items)))
+    centres = pts[rng.choice(len(items), n, replace=False)]
+    ang, stretch = rng.uniform(0, np.pi, n), rng.uniform(.6, 1.7, n)
+    d = pts[:, None, :] - centres[None, :, :]
+    u = d[..., 0] * np.cos(ang) + d[..., 1] * np.sin(ang)
+    v = d[..., 1] * np.cos(ang) - d[..., 0] * np.sin(ang)
+    owner = np.argmin(np.hypot(u / stretch, v * stretch), axis=1)
+    members = {c: [] for c in range(n)}
+    for i, c in enumerate(owner):
+        members[int(c)].append(i)
+    todo = [c for c in members if members[c]]
+    cur = todo.pop(int(rng.integers(len(todo))))
+    order = [cur]
+    while todo:
+        dist = np.hypot(*(centres[todo] - centres[cur]).T)
+        near = np.argsort(dist)[:3]                       # usually next door, sometimes a hop
+        odds = np.array([.6, .25, .15])[:len(near)]
+        cur = todo.pop(int(rng.choice(near, p=odds / odds.sum())))
+        order.append(cur)
+    return [[s for i in members[c] for s in items[i][2]] for c in order]
 
 
 def fit(events, n):

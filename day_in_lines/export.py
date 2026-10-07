@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image
 
 from .constants import H, TOTAL, W
-from .planner import build_plan
+from .planner import Look, build_plan
 from .render import Sheet
 
 
@@ -57,11 +57,12 @@ def write_xsheet(events, path: Path, start: dt.time, dur=dt.timedelta(minutes=TO
             f.write(f'{i + 1},{t:%H:%M},{e["phase"]},"{e["label"]}",{len(e["strokes"])}\n')
 
 
-def breakdown(image, seed, fit_mode, outdir: Path, start: dt.time, frames_every: int, dur=dt.timedelta(minutes=TOTAL)):
+def breakdown(image, seed, fit_mode, outdir: Path, start: dt.time, frames_every: int, dur=dt.timedelta(minutes=TOTAL),
+              look: Look = Look()):
     """Everything the viewer shows, as files: the exposure sheet, an offline viewer
     page, and optionally the sheet at each iteration with that minute's new lines in blue."""
     outdir.mkdir(parents=True, exist_ok=True)
-    events = build_plan(image, seed, fit_mode)
+    events = build_plan(image, seed, fit_mode, look)
     write_xsheet(events, outdir / "exposure_sheet.csv", start, dur)
     (outdir / "day_in_lines.html").write_text(viewer_html(events))
     if frames_every:

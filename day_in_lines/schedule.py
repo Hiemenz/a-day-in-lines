@@ -120,9 +120,18 @@ class Overrides:
         with self.lock:
             ovs = self._load()
             new = {"hash": h, "start": begin.isoformat(), "end": fin.isoformat(), "fixed": fixed}
+            if not fixed:                  # joins the back of the queue, so uploads already promised a time keep it
+                waiting = [self._hands_back(o) for o in ovs if not o.get("fixed")]
+                if waiting and begin < max(waiting):
+                    self._move(new, next_start(max(waiting), self.start))
             ovs.append(new)
             self._save(self._chain(ovs))
             return self._t(new, "start"), self._t(new, "end")
+
+    def hashes(self):
+        """Pictures waiting for, or holding, the sheet."""
+        with self.lock:
+            return {o["hash"] for o in self._load()}
 
     def current(self, now: dt.datetime, lib: Library):
         """The upload on the sheet now, as (hash, start, end), or None. Drops finished

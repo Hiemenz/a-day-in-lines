@@ -6,7 +6,7 @@ import json
 import threading
 from pathlib import Path
 
-from .constants import TOTAL
+from .constants import MAX_UPLOAD_BYTES, TOTAL
 from .export import fill_live, viewer_page
 from .library import Library
 from .schedule import Overrides, next_start
@@ -27,12 +27,14 @@ class Live:
 
 
 def serve(live: Live, port: int, overrides: Overrides, start: dt.time, dur: dt.timedelta, lib: Library,
-          upload_key=None):
+          upload_key=None, bind="0.0.0.0"):
     import hmac
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from urllib.parse import urlparse, parse_qs, unquote
 
     class H(BaseHTTPRequestHandler):
+        timeout = 30                      # a stalled upload must not hold a thread forever
+
         def log_message(self, *a):
             pass
 
@@ -72,10 +74,18 @@ def serve(live: Live, port: int, overrides: Overrides, start: dt.time, dur: dt.t
             q = parse_qs(u.query)
             if upload_key and not hmac.compare_digest(q.get("key", [""])[0].encode(), upload_key.encode()):
                 return self._send(403, '{"error":"Sending pictures needs the key: open the page as /?key=..."}')
-            n = int(self.headers.get("Content-Length") or 0)
-            if not 0 < n <= 40_000_000:
-                return self._send(413, '{"error":"Images up to 40 MB, please."}')
-            data = self.rfile.read(n)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                return self._send(400, '{"error":"Bad Content-Length."}')
+            if not 0 < n <= MAX_UPLOAD_BYTES:
+                return self._send(413, json.dumps({"error": f"Images up to {MAX_UPLOAD_BYTES // 1_000_000} MB, please."}))
+            try:
+                data = self.rfile.read(n)
+            except OSError:                       # timed out or dropped part-way
+                return
+            if len(data) != n:
+                return self._send(400, '{"error":"The upload was cut short."}')
             name = Path(unquote(self.headers.get("X-Filename", "upload.jpg"))).name or "upload.jpg"
             try:
                 h = lib.add_upload(data, name)
@@ -99,6 +109,8 @@ def serve(live: Live, port: int, overrides: Overrides, start: dt.time, dur: dt.t
             self._send(200, json.dumps({"ok": True, "start": begin.strftime("%a %H:%M"), "end": fin.strftime("%a %H:%M"),
                                         "now": begin <= now}))
 
-    srv = ThreadingHTTPServer(("0.0.0.0", port), H)
+    srv = ThreadingHTTPServer((bind, port), H)
+    srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    print(f"viewer at http://<this-pi>:{port}/", flush=True)
+    print(f"viewer at http://<this-pi>:{srv.server_address[1]}/", flush=True)
+    return srv

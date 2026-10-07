@@ -1,6 +1,8 @@
 """Graphite on paper, and the 1-bit dither for the panel."""
 from __future__ import annotations
 
+import functools
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -78,17 +80,68 @@ class Sheet:
         return out.resize(size, Image.LANCZOS) if size else out
 
 
-def bayer(n):
-    m = np.array([[0, 2], [3, 1]])
-    while m.shape[0] < n:
-        m = np.block([[4 * m, 4 * m + 2], [4 * m + 3, 4 * m + 1]])
-    return (m + 0.5) / m.size
+@functools.lru_cache(maxsize=None)
+def blue_noise(n=64, sigma=1.5, seed=11):
+    """An n x n threshold map with blue-noise spectrum (void-and-cluster).
+
+    Like a Bayer matrix it is a fixed per-pixel threshold, so dithering is local:
+    adding a stroke only flips pixels under that stroke. Unlike Bayer it has no
+    regular lattice, so tones don't show a crosshatch grid. Made once per run
+    (well under a second) and tiled across the sheet."""
+    r = np.random.default_rng(seed)
+    total = n * n
+    d = np.minimum(np.arange(n), n - np.arange(n))
+    kern = np.exp(-(d[:, None] ** 2 + d[None, :] ** 2) / (2 * sigma ** 2))
+
+    def shift(y, x):
+        return np.roll(kern, (y, x), (0, 1))
+
+    def energy(pat):
+        e = np.zeros((n, n))
+        for y, x in zip(*np.nonzero(pat)):
+            e += shift(y, x)
+        return e
+
+    def tightest(pat, e):
+        return np.unravel_index(np.argmax(np.where(pat, e, -np.inf)), (n, n))
+
+    def void(pat, e):
+        return np.unravel_index(np.argmin(np.where(pat, np.inf, e)), (n, n))
+
+    pat = np.zeros((n, n), bool)
+    pat.flat[r.choice(total, total // 10, replace=False)] = True
+    e = energy(pat)
+    while True:                                   # relax until no move improves the pattern
+        y, x = tightest(pat, e)
+        pat[y, x] = False
+        e -= shift(y, x)
+        y2, x2 = void(pat, e)
+        pat[y2, x2] = True
+        e += shift(y2, x2)
+        if (y, x) == (y2, x2):
+            break
+    ones = int(pat.sum())
+    rank = np.zeros((n, n))
+    work, ew = pat.copy(), e.copy()
+    for k in range(ones - 1, -1, -1):             # rank the initial ones, tightest first out
+        y, x = tightest(work, ew)
+        rank[y, x] = k
+        work[y, x] = False
+        ew -= shift(y, x)
+    work, ew = pat.copy(), e.copy()
+    for k in range(ones, total):                  # keep filling the biggest voids
+        y, x = void(work, ew)
+        rank[y, x] = k
+        work[y, x] = True
+        ew += shift(y, x)
+    return ((rank + 0.5) / total).astype(np.float32)
 
 
 def dither_1bit(gray: Image.Image, gamma=2.4) -> Image.Image:
-    """Ordered (Bayer) dither. It's local, so adding a stroke only flips pixels
+    """Blue-noise threshold dither. It's local, so adding a stroke only flips pixels
     under that stroke: partial refreshes show exactly the new marks, nothing else."""
     g = (np.asarray(gray, np.float32) / 255) ** gamma
     h, w = g.shape
-    t = np.tile(bayer(8), (h // 8 + 1, w // 8 + 1))[:h, :w]
+    m = blue_noise()
+    t = np.tile(m, (h // m.shape[0] + 1, w // m.shape[1] + 1))[:h, :w]
     return Image.fromarray(((g > t) * 255).astype(np.uint8), "L").convert("1")

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import secrets
 import sys
 import time
 from pathlib import Path
@@ -13,10 +14,77 @@ from .constants import H, IMG_EXT, TOTAL, W
 from .displays import FileDisplay, WaveshareDisplay
 from .export import breakdown
 from .library import Library, bake_image
-from .planner import build_plan
+from .planner import Look, build_plan
 from .render import Sheet, dither_1bit
 from .schedule import Overrides, parse_end, schedule, window
 from .server import Live, serve
+
+
+def make_display(args):
+    if args.display == "file":
+        return FileDisplay(args.out, tuple(map(int, args.size.split("x"))))
+    if args.display.startswith("waveshare:"):
+        try:
+            return WaveshareDisplay(args.display.split(":", 1)[1], args.gamma)
+        except ImportError as e:
+            sys.exit(f"could not load the panel driver ({e}). Is PYTHONPATH set to the e-Paper "
+                     f"python/lib folder? See the README.")
+    sys.exit(f"unknown display {args.display}")
+
+
+def check(args):
+    """Try the display end to end: a full refresh of a test card, then a partial refresh
+    that adds one mark, the way the clock updates it. Takes under a minute."""
+    disp = make_display(args)
+    w, h = disp.size
+
+    def card(extra=False):
+        im = Image.new("L", (w, h), 255)
+        d = ImageDraw.Draw(im)
+        d.rectangle([0, 0, w - 1, h - 1], outline=0, width=3)
+        d.line([0, 0, w, h], fill=0, width=1)
+        d.line([0, h, w, 0], fill=0, width=1)
+        for i in range(w - 40):                                  # a grey ramp, to see the dither
+            d.line([20 + i, h - 70, 20 + i, h - 30], fill=int(255 * i / (w - 40)))
+        d.text((24, 20), f"A Day in Lines: display check {w}x{h}", fill=0)
+        d.text((24, 40), "partial refresh adds the circle" if not extra else "partial refresh worked", fill=0)
+        if extra:
+            d.ellipse([w // 2 - 40, h // 2 - 40, w // 2 + 40, h // 2 + 40], outline=0, width=4)
+        return dither_1bit(im, args.gamma)
+
+    t0 = time.time()
+    disp.show(card(), full=True)
+    print(f"full refresh ok ({time.time() - t0:.1f}s)", flush=True)
+    time.sleep(3)
+    t0 = time.time()
+    disp.show(card(extra=True), full=False)
+    print(f"partial refresh ok ({time.time() - t0:.1f}s)", flush=True)
+    if hasattr(disp, "epd") and not hasattr(disp.epd, "display_Partial"):
+        print("note: this panel module has no partial refresh, so every minute will be a full (blinking) refresh")
+    if args.display == "file":
+        print(f"wrote {args.out}")
+    print("If the panel showed the test card, then the circle without a full blink, you're ready to `run`.")
+
+
+def upload_key_for(args, cache: Path):
+    """Uploads need a key unless --open-uploads. With no --upload-key, one is made
+    once and kept in the cache, so the address you bookmarked keeps working."""
+    if args.open_uploads:
+        return None
+    if args.upload_key:
+        return args.upload_key
+    f = cache / "upload_key"
+    try:
+        return f.read_text().strip() or None
+    except FileNotFoundError:
+        key = secrets.token_urlsafe(9)
+        f.write_text(key + "\n")
+        f.chmod(0o600)
+        return key
+
+
+def look_of(args) -> Look:
+    return Look(args.detail, args.contrast)
 
 
 def pick_image(src: Path, day: dt.date) -> Path:
@@ -31,21 +99,21 @@ def pick_image(src: Path, day: dt.date) -> Path:
 def run(args):
     cache = Path(args.cache).expanduser()
     cache.mkdir(parents=True, exist_ok=True)
-    if args.display == "file":
-        disp = FileDisplay(args.out, tuple(map(int, args.size.split("x"))))
-    elif args.display.startswith("waveshare:"):
-        disp = WaveshareDisplay(args.display.split(":", 1)[1], args.gamma)
-    else:
-        sys.exit(f"unknown display {args.display}")
+    disp = make_display(args)
     start = dt.datetime.strptime(args.start, "%H:%M").time()
     dur = window(start, parse_end(args.end))
-    lib = Library(cache, Path(args.image).expanduser(), args.fit, args.seed, disp.size, args.gamma, args.mono)
+    lib = Library(cache, Path(args.image).expanduser(), args.fit, args.seed, disp.size, args.gamma, args.mono, look_of(args))
     lib.scan()
     live = Live()
-    lib.watch(args.scan_every)
     overrides = Overrides(cache, start, dur)
+    lib.watch(args.scan_every, keep=args.keep, protect=lambda: overrides.hashes() | lib.recent_picks())
     if args.serve:
-        serve(live, args.serve, overrides, start, dur, lib, args.upload_key)
+        key = upload_key_for(args, cache)
+        serve(live, args.serve, overrides, start, dur, lib, key, args.bind)
+        if key:
+            print(f"uploads need the key: open http://<this-pi>:{args.serve}/?key={key}", flush=True)
+        else:
+            print("uploads are open to anyone who can reach this port (--open-uploads)", flush=True)
     print(f"drawing each day {start:%H:%M}-{(dt.datetime.combine(dt.date.min, start) + dur):%H:%M}"
           f" ({dur.total_seconds() / 60 / TOTAL:.2g} min per drawing event)", flush=True)
 
@@ -89,9 +157,9 @@ def tick(args, disp, lib, live, overrides, start, dur, key, shown, since_full):
     return key, shown, since_full
 
 
-def preview(image, seed, fit_mode, outdir: Path, every: int):
+def preview(image, seed, fit_mode, outdir: Path, every: int, look: Look = Look()):
     outdir.mkdir(parents=True, exist_ok=True)
-    events = build_plan(image, seed, fit_mode)
+    events = build_plan(image, seed, fit_mode, look)
     sh = Sheet(seed)
     hours = {60 * h: None for h in range(1, 13)}
     gif = []
@@ -119,9 +187,13 @@ def preview(image, seed, fit_mode, outdir: Path, every: int):
 
 def main():
     ap = argparse.ArgumentParser(description="A Day in Lines: a drawing that takes all day.")
-    ap.add_argument("--image", required=True, help="image file, or a folder (one picture per day)")
+    ap.add_argument("--image", help="image file, or a folder (one picture per day); not needed for `check`")
     ap.add_argument("--seed", type=int, default=None, help="fixed seed (default: the date)")
     ap.add_argument("--fit", choices=["crop", "pad"], default="crop", help="fill the sheet, or keep the whole image")
+    ap.add_argument("--detail", type=float, default=1.0, metavar="X",
+                    help="more fine lines and tighter hatching above 1.0, fewer below (0.5-2)")
+    ap.add_argument("--contrast", type=float, default=1.0, metavar="X",
+                    help="darker shading for flat, low-contrast pictures above 1.0 (0.5-2)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("plan", help="print the 720-minute schedule")
     sp.add_argument("--start", default="07:00")
@@ -144,6 +216,11 @@ def main():
     sv = sub.add_parser("preview", help="final frame, hourly contact sheet, timelapse")
     sv.add_argument("-o", "--outdir", default="preview")
     sv.add_argument("--every", type=int, default=6)
+    sc = sub.add_parser("check", help="try the display with a test card before the first long run")
+    sc.add_argument("--display", default="file", help="'file' or 'waveshare:<module>'")
+    sc.add_argument("--out", default="check.png")
+    sc.add_argument("--size", default="800x480")
+    sc.add_argument("--gamma", type=float, default=2.4)
     sr = sub.add_parser("run", help="drive the display")
     sr.add_argument("--display", default="file", help="'file' or 'waveshare:<module>', e.g. waveshare:epd7in5_V2")
     sr.add_argument("--out", default="current.png")
@@ -159,22 +236,35 @@ def main():
     sr.add_argument("--mono", action=argparse.BooleanOptionalAction, default=True)
     sr.add_argument("--gamma", type=float, default=2.4, help="darken mid-tones before 1-bit dithering")
     sr.add_argument("--upload-key", default=None, metavar="KEY",
-                    help="only accept uploads from the viewer opened as /?key=KEY (default: anyone on the network)")
-    sr.add_argument("--full-refresh-every", type=int, default=0,
-                    help="full (blinking) refresh every N updates to clear ghosting; 0 = never")
+                    help="the key uploads need, from the viewer opened as /?key=KEY "
+                         "(default: one is made and kept in the cache, and printed at start-up)")
+    sr.add_argument("--open-uploads", action="store_true", help="let anyone who can reach the port upload, no key")
+    sr.add_argument("--bind", default="0.0.0.0", metavar="ADDR",
+                    help="address the viewer listens on (default all; 127.0.0.1 = this machine only)")
+    sr.add_argument("--keep", type=int, default=10, metavar="N",
+                    help="free stored frames that can't be shown again: those made with older settings, and those of "
+                         "pictures deleted from the folder beyond the newest N (-1 = never delete anything)")
+    sr.add_argument("--full-refresh-every", type=int, default=120,
+                    help="full (blinking) refresh every N updates to clear ghosting (default 120 = every two hours); 0 = never")
     args = ap.parse_args()
+    if args.cmd != "check" and not args.image:
+        ap.error("--image is required")
+    if not (0.5 <= args.detail <= 2 and 0.5 <= args.contrast <= 2):
+        ap.error("--detail and --contrast must be between 0.5 and 2")
 
     today = dt.date.today()
     seed = args.seed if args.seed is not None else today.toordinal()
     if args.cmd == "run":
         return run(args)
+    if args.cmd == "check":
+        return check(args)
     if args.cmd == "bake":
         size = tuple(map(int, args.size.split("x")))
         if args.to:                                   # one image, called by the watcher
-            bake_image(Path(args.image), seed, args.fit, Path(args.to), size, args.gamma, not args.gray)
+            bake_image(Path(args.image), seed, args.fit, Path(args.to), size, args.gamma, not args.gray, look_of(args))
             return
         lib = Library(Path(args.cache).expanduser(), Path(args.image).expanduser(), args.fit, args.seed,
-                      size, args.gamma, not args.gray)
+                      size, args.gamma, not args.gray, look_of(args))
         lib.scan()
         todo = lib.unbaked()
         print(f"{len(lib.data['images'])} pictures, {len(todo)} to break down")
@@ -187,21 +277,21 @@ def main():
     if args.cmd == "plan":
         st = dt.datetime.strptime(args.start, "%H:%M").time()
         t0, dur = dt.datetime.combine(today, st), window(st, parse_end(args.end))
-        for i, e in enumerate(build_plan(image, seed, args.fit)):
+        for i, e in enumerate(build_plan(image, seed, args.fit, look_of(args))):
             print(f"{i + 1:3d}  {t0 + dur * (i + 1) / TOTAL:%H:%M}  {e['phase']:<12} "
                   f"{e['label']:<24} {len(e['strokes']):3d} strokes")
     elif args.cmd == "breakdown":
         st = dt.datetime.strptime(args.start, "%H:%M").time()
-        breakdown(image, seed, args.fit, Path(args.outdir), st, args.frames, window(st, parse_end(args.end)))
+        breakdown(image, seed, args.fit, Path(args.outdir), st, args.frames, window(st, parse_end(args.end)), look_of(args))
     elif args.cmd == "frame":
-        events = build_plan(image, seed, args.fit)
+        events = build_plan(image, seed, args.fit, look_of(args))
         sh = Sheet(seed)
         for e in events[:args.k]:
             sh.draw_event(e)
         (dither_1bit(sh.gray(), args.gamma) if args.mono else sh.paper((W, H))).save(args.out)
         print(args.out)
     elif args.cmd == "preview":
-        preview(image, seed, args.fit, Path(args.outdir), args.every)
+        preview(image, seed, args.fit, Path(args.outdir), args.every, look_of(args))
     elif args.cmd == "run":
         run(args)
 

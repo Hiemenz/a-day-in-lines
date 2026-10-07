@@ -11,9 +11,9 @@ from pathlib import Path
 
 from PIL import Image, ImageOps
 
-from .constants import H, IMG_EXT, TOTAL, UPLOAD_EXT, W
+from .constants import BAKE_VERSION, H, IMG_EXT, MAX_UPLOAD_PIXELS, TOTAL, UPLOAD_EXT, W
 from .export import viewer_plan
-from .planner import build_plan
+from .planner import Look, build_plan
 from .render import Sheet, dither_1bit
 
 
@@ -40,10 +40,10 @@ class Library:
     """
 
     def __init__(self, cache: Path, src: Path, fit: str, fixed_seed=None,
-                 size=(W, H), gamma=2.4, mono=True):
+                 size=(W, H), gamma=2.4, mono=True, look: Look = Look()):
         import threading
         self.cache, self.src, self.fit, self.fixed_seed = cache, src, fit, fixed_seed
-        self.size, self.gamma, self.mono = tuple(size), gamma, mono
+        self.size, self.gamma, self.mono, self.look = tuple(size), gamma, mono, look
         self.plans = cache / "baked"
         self.plans.mkdir(parents=True, exist_ok=True)
         self.uploads = (src if src.is_dir() else cache / "uploads")
@@ -120,7 +120,7 @@ class Library:
 
     def dir(self, h):
         w, hh = self.size
-        return self.plans / f"{h}-{self.fit}-{w}x{hh}-{'mono' if self.mono else 'gray'}-g{self.gamma:g}-s{self.seed(h)}"
+        return self.plans / f"{h}-{self.fit}-{w}x{hh}-{'mono' if self.mono else 'gray'}-g{self.gamma:g}-s{self.seed(h)}{self.look.suffix}-{BAKE_VERSION}"
 
     def ready(self, h):
         return (self.dir(h) / "meta.json").exists()
@@ -173,15 +173,60 @@ class Library:
         if background:
             import subprocess
             cmd = [sys.executable, str(Path(__file__).resolve().parent.parent / "a_day_in_lines.py"), "--image", str(img), "--fit", self.fit,
-                   "--seed", str(self.seed(h)), "bake", "--to", str(out),
+                   "--seed", str(self.seed(h)),
+                   "--detail", str(self.look.detail), "--contrast", str(self.look.contrast),
+                   "bake", "--to", str(out),
                    "--size", "x".join(map(str, self.size)), "--gamma", str(self.gamma)] + ([] if self.mono else ["--gray"])
             r = subprocess.run(cmd, preexec_fn=lambda: os.nice(15), capture_output=True, text=True)
             if r.returncode:
                 err = (r.stderr.strip().splitlines() or [f"exit code {r.returncode}"])[-1]
                 print(f"could not break down {img.name}: {err}", flush=True)
             return self.ready(h)
-        bake_image(img, self.seed(h), self.fit, out, self.size, self.gamma, self.mono)
+        bake_image(img, self.seed(h), self.fit, out, self.size, self.gamma, self.mono, self.look)
         return True
+
+    def recent_picks(self):
+        with self.lock:
+            return set(self.data["days"].values())
+
+    # ---- housekeeping ----
+    def prune(self, keep=10, protect=()):
+        """Free disk by deleting stored frames that can never be shown again:
+
+          - folders made with older settings or an older program version;
+          - folders whose picture has gone from the picture folder, apart from the
+            `keep` most recent (in case it comes back);
+          - half-finished bakes abandoned for over a day.
+
+        keep < 0 turns pruning off.
+
+        Pictures still in the folder are never touched, so nothing is made again.
+        Returns the names removed."""
+        import shutil
+        removed = []
+        if keep < 0:
+            return removed
+        with self.lock:
+            wanted = {self.dir(h).name: h for h in self.data["images"]}
+            gone = [self.plans / n for n, h in wanted.items() if not self.present(h) and h not in set(protect)]
+            busy = {self.dir(h).name for h in self.baking}
+        try:
+            entries = list(self.plans.iterdir())
+        except FileNotFoundError:
+            return removed
+        stale = []
+        for d in entries:
+            if d.name.startswith("."):
+                if d.name.endswith(".part") and time.time() - d.stat().st_mtime > 86400:
+                    stale.append(d)
+            elif d.is_dir() and d.name not in wanted and d.name not in busy:
+                stale.append(d)
+        gone = sorted((d for d in gone if d.is_dir()), key=lambda d: d.stat().st_mtime, reverse=True)
+        for d in stale + gone[keep:]:
+            shutil.rmtree(d, ignore_errors=True)
+            d.with_name(f".{d.name}.lock").unlink(missing_ok=True)
+            removed.append(d.name)
+        return removed
 
     def ensure(self, h):
         """Results exist, or get created now (only ever once per image)."""
@@ -216,8 +261,12 @@ class Library:
         try:
             with Image.open(io.BytesIO(data)) as im:
                 fmt = im.format
+                if im.width * im.height > MAX_UPLOAD_PIXELS:
+                    raise ValueError(f"That picture is too large (over {MAX_UPLOAD_PIXELS // 1_000_000} megapixels).")
                 im.verify()
-        except Exception:
+        except ValueError:
+            raise
+        except Exception:                          # includes Pillow's decompression-bomb error
             raise ValueError("That file is not an image the display can read.")
         ext = UPLOAD_EXT.get(fmt)
         if ext is None:                            # e.g. GIF: store as PNG so the folder scan picks it up
@@ -249,7 +298,7 @@ class Library:
             self.save()
         return h
 
-    def watch(self, every: int, on_change=None):
+    def watch(self, every: int, on_change=None, keep=10, protect=lambda: ()):
         """Background loop: notice new pictures and bake them, oldest first."""
         import threading
 
@@ -259,6 +308,8 @@ class Library:
                     new = self.scan()
                     for h in new:
                         print(f"new picture: {self.data['images'][h]['name']}", flush=True)
+                    for name in self.prune(keep, protect()):
+                        print(f"removed stored frames {name}", flush=True)
                     for h in self.unbaked():
                         name = self.data["images"][h]["name"]
                         t0 = time.time()
@@ -272,7 +323,7 @@ class Library:
         threading.Thread(target=loop, daemon=True).start()
 
 
-def bake_image(image: Path, seed: int, fit: str, out: Path, size=(W, H), gamma=2.4, mono=True):
+def bake_image(image: Path, seed: int, fit: str, out: Path, size=(W, H), gamma=2.4, mono=True, look: Look = Look()):
     """Do all the work for one image up front and store it as static files:
 
       frames/000.png ... 720.png   the finished display frame for every minute
@@ -285,15 +336,15 @@ def bake_image(image: Path, seed: int, fit: str, out: Path, size=(W, H), gamma=2
     with open(out.with_name(f".{out.name}.lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)      # another process (e.g. a manual `bake`) may be on it
         if not (out / "meta.json").exists():
-            _bake_image(image, seed, fit, out, size, gamma, mono)
+            _bake_image(image, seed, fit, out, size, gamma, mono, look)
 
 
-def _bake_image(image, seed, fit, out, size, gamma, mono):
+def _bake_image(image, seed, fit, out, size, gamma, mono, look):
     import shutil
     tmp = out.with_name(f".{out.name}.{os.getpid()}.part")
     shutil.rmtree(tmp, ignore_errors=True)
     (tmp / "frames").mkdir(parents=True)
-    events = build_plan(image, seed, fit)
+    events = build_plan(image, seed, fit, look)
     (tmp / "viewer.json").write_text(viewer_plan(events))
     sh = Sheet(seed)
     for k in range(TOTAL + 1):
