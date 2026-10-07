@@ -2,7 +2,7 @@
 
 An e-ink picture for the wall that draws itself. Give it any image, and over a day (12 hours by default, or whatever start and finish times you choose) a Raspberry Pi redraws it on the panel as a graphite pencil sketch, one stroke group at a time, 720 in all. Nothing is erased or redrawn, so anyone walking past sees a drawing in the middle of being made.
 
-Or, with `--medium paint`, it starts from a blank canvas and paints the picture with a palette knife: big slabs of colour first, then layers of smaller strokes, then details and highlights. See [Painting instead of pencil](#painting-instead-of-pencil).
+Or, with `--medium paint`, give it a painting and it starts from a blank canvas and replays that painting stroke by stroke, big slabs of colour first, then smaller strokes, then details, ending on the picture you gave it. See [Painting instead of pencil](#painting-instead-of-pencil).
 
 ![The finished sketch](docs/final.png)
 
@@ -42,27 +42,31 @@ Every line goes through a simulated pencil: a slight wobble, overshoot at the en
 ## Painting instead of pencil
 
 ```bash
-python3 a_day_in_lines.py --image ~/pictures --medium paint run --display waveshare:epd7in5_V2 --serve 8080
+python3 a_day_in_lines.py --image ~/paintings --medium paint run --display waveshare:epd7in5_V2 --serve 8080
 ```
 
-The sheet starts completely blank. The same 720 events build a palette-knife painting in four phases:
+Give it a painting and the day replays it from a blank canvas. The picture you give it is the finished painting; the plan works backwards from that end result.
+
+The painting is taken apart into stroke-shaped regions that follow its own edges and ridges, at four scales, and the 720 events lay them down from coarse to fine:
 
 | Phase | What goes on |
 |---|---|
-| Blocking in (about 90 minutes) | A few huge sweeps of the big masses of colour, until most of the canvas has something on it |
-| Underpainting (200) | Broad strokes until no bare canvas is left |
-| Building form (300) | Medium strokes that follow the flow of the image, concentrated where there is something to see |
-| Details and highlights (130) | Small strokes along the edges, the darkest darks, thick light strokes, and a little flung paint |
+| Blocking in (80 events) | Big slabs of the broad masses of colour, each one flat colour with a trace of the painting's real texture |
+| Underpainting (170) | Smaller slabs wherever the canvas is still wrong |
+| Building form (280) | Medium strokes, with more of the real texture |
+| Details (190) | The smallest strokes, ending on the painting's own pixels |
 
-Strokes are opaque, so later ones cover earlier ones. Each is a ribbon with hand-cut edges, split into a few wide streaks that peel away where the paint runs dry, with the canvas weave showing through and a raised edge that catches the light. The painting is planned and rendered in colour; the panel shows its luminance, and `preview`, `breakdown` and `frame` without `--mono` give the colour version.
+At each scale only the regions that still differ from the finished painting get a stroke, so nothing is painted twice for no reason and the last frame is the picture you gave it (the tests check that the final frame matches the original to within about 1%). Strokes are opaque, so later ones cover earlier ones, and each has a slightly hand-cut edge. The sheet starts completely blank.
 
-The pictures are read the same way for any subject: each image's tones are stretched to the full range first, so a muted painting still has contrast on a 1-bit panel. Colours are taken from the picture under each stroke, and stroke direction follows the picture's own flow, so brushwork in the original shapes the brushwork here. `--detail` gives smaller, more numerous strokes; `--contrast` deepens the tones. It is an approximation of a painting's look, not a copy of it: expect the shapes, colours and mood of the original in knife-stroke form, not its fine texture.
+It is planned and rendered in colour; the panel shows the luminance. Each picture's tones are stretched to the full range, and a dark painting gets its mid-tones lifted, so a 1-bit panel shows more than a black mass. `preview`, `breakdown` and `frame` without `--mono` give the colour version.
 
-Paint does not come with the browser preview that pencil has (the page shows the display's own frames instead), and `web/standalone.html` is pencil only.
+What it can't do: recover the painter's actual strokes or the order they were made in. Overlapping paint hides both, so the regions are an estimate that follows the painting's colour edges, not a copy of the real brushwork. It works with any picture, but is meant for paintings with visible strokes; a photo comes out as a mosaic of its own regions. `--detail` gives more, smaller regions; `--contrast` changes the target picture itself, so the final frame will then differ from the original on purpose.
+
+Painting needs scikit-image, takes about a minute and 350 MB of memory per picture on a Pi 5, and has no in-browser preview (the page shows the display's own frames instead; `web/standalone.html` is pencil only).
 
 ![Paint over a day](docs/paint_contact_sheet.png)
 
-The finished frame as the panel shows it (the sample picture is a grey sketch, so it paints in greys and creams):
+The finished frame as the panel shows it (the sample picture is a grey sketch, so this example is greys and creams):
 
 ![Paint, as the panel shows it](docs/paint_final_eink.png)
 
@@ -70,7 +74,7 @@ The finished frame as the panel shows it (the sample picture is a grey sketch, s
 
 Each picture is processed exactly once, up front. Processing stores everything about it as static files in `~/.cache/a-day-in-lines/baked/<hash>-<fit>-<size>-<mono|gray>-g<gamma>-s<seed>/`:
 
-- `frames/000.png` to `frames/720.png`: the finished display frame for every minute (about 30 s per picture for pencil and 45 s for paint, on a Pi 5);
+- `frames/000.png` to `frames/720.png`: the finished display frame for every minute (about 30 s per picture for pencil and 45 to 60 s for paint, on a Pi 5);
 - `viewer.json`: the strokes, for the web viewer;
 - `meta.json`: the name and exposure sheet, written last, so a half-finished folder is never used.
 
@@ -104,7 +108,7 @@ python3 ~/a-day-in-lines/a_day_in_lines.py check --display waveshare:epd7in5_V2
 python3 ~/a-day-in-lines/a_day_in_lines.py --image ~/pictures/ run --display waveshare:epd7in5_V2 --serve 8080
 ```
 
-`--image` can be a single file or a folder; with a folder, a different picture is drawn each day. scikit-image is optional: without it the thin-line pass is skipped.
+`--image` can be a single file or a folder; with a folder, a different picture is drawn each day. scikit-image is optional for pencil (without it the thin-line pass is skipped) but painting needs it.
 
 ## The viewer on your phone (`--serve`)
 
@@ -140,8 +144,8 @@ Global options go before the command: `python3 a_day_in_lines.py --image PATH [-
 | Global option | Meaning |
 |---|---|
 | `--medium` | `pencil` (default) or `paint` |
-| `--detail X` | 0.5 to 2, default 1. More fine lines and tighter hatching in pencil; smaller, more numerous strokes in paint |
-| `--contrast X` | 0.5 to 2, default 1. Darker shading for flat, low-contrast pictures in pencil; deeper tones in paint |
+| `--detail X` | 0.5 to 2, default 1. More fine lines and tighter hatching in pencil; more, smaller regions in paint |
+| `--contrast X` | 0.5 to 2, default 1. Darker shading for flat, low-contrast pictures in pencil; in paint it changes the target picture itself |
 
 | Command | What it does |
 |---|---|
