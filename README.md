@@ -10,6 +10,36 @@ There are two paths, chosen with `--medium`: **drawing** (`--medium draw`, or `p
 
 The sheet at each hour of the day ([full size](docs/contact_sheet.png)), and the finished frame as the 1-bit panel shows it ([e-ink](docs/final_eink.png)).
 
+## How to run it
+
+You need Python 3 with numpy, scipy, Pillow and scikit-image (scikit-image is needed for painting). On Raspberry Pi OS, `sudo apt install python3-numpy python3-scipy python3-pil python3-skimage`; elsewhere, `pip install -r requirements.txt`. Then, from the repo folder (`--image` is a picture, or a folder of pictures with a different one each day):
+
+**1. Look at the result without any hardware.** Writes the finished picture, an hourly contact sheet and a timelapse into `preview/`:
+
+```bash
+python3 a_day_in_lines.py --image examples/tanker.png preview -o preview/                       # drawing
+python3 a_day_in_lines.py --image my_painting.jpg --medium paint preview -o preview/            # painting
+```
+
+**2. Run it for real, still without a panel.** The clock runs on your computer and writes the current frame to `current.png` once a minute, with the viewer on http://localhost:8080 (the first run prints the address with the upload key):
+
+```bash
+python3 a_day_in_lines.py --image ~/pictures run --serve 8080                                   # drawing
+python3 a_day_in_lines.py --image ~/paintings --medium paint run --serve 8080                   # painting
+```
+
+The first picture takes 30 to 60 seconds to process before anything appears (later ones are processed in the background). Add `--start 09:00 --end 17:00` to choose when each day's drawing begins and is finished (default: 07:00, over 12 hours). Stop it with Ctrl-C.
+
+**3. Run it on a Waveshare e-ink panel** (Raspberry Pi; setup below). Try the panel first, then run:
+
+```bash
+export PYTHONPATH=~/e-Paper/RaspberryPi_JetsonNano/python/lib
+python3 a_day_in_lines.py check --display waveshare:epd7in5_V2
+python3 a_day_in_lines.py --image ~/pictures run --display waveshare:epd7in5_V2 --serve 8080
+```
+
+**4. Keep it running at boot:** see [Run at boot](#run-at-boot). Everything else (every option, the other commands, how uploads work) is further down.
+
 ## What's in the repo
 
 | Path | What it is |
