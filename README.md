@@ -2,7 +2,7 @@
 
 An e-ink picture for the wall that draws itself. Give it any image, and over a day (12 hours by default, or whatever start and finish times you choose) a Raspberry Pi redraws it on the panel as a graphite pencil sketch, one stroke group at a time, 720 in all. Nothing is erased or redrawn, so anyone walking past sees a drawing in the middle of being made.
 
-Or, with `--medium paint`, give it a painting and it starts from a blank canvas and replays that painting stroke by stroke, big slabs of colour first, then smaller strokes, then details, ending on the picture you gave it. See [Painting instead of pencil](#painting-instead-of-pencil).
+There are two paths, chosen with `--medium`: **drawing** (`--medium draw`, or `pencil`, the default) invents pencil marks for any image, as above, and **painting** (`--medium paint`) is for paintings. With `--medium paint`, give it a painting and it starts from a blank canvas and replays that painting stroke by stroke, big slabs of colour first, then smaller strokes, then details, ending on the picture you gave it. See [Painting instead of pencil](#painting-instead-of-pencil).
 
 ![The finished sketch](docs/final.png)
 
@@ -143,7 +143,7 @@ Global options go before the command: `python3 a_day_in_lines.py --image PATH [-
 
 | Global option | Meaning |
 |---|---|
-| `--medium` | `pencil` (default) or `paint` |
+| `--medium` | `draw` (also called `pencil`; the default) or `paint`: the two paths, one for drawing and one for painting |
 | `--detail X` | 0.5 to 2, default 1. More fine lines and tighter hatching in pencil; more, smaller regions in paint |
 | `--contrast X` | 0.5 to 2, default 1. Darker shading for flat, low-contrast pictures in pencil; in paint it changes the target picture itself |
 

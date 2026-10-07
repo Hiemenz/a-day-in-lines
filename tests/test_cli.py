@@ -63,7 +63,7 @@ def test_gamma_defaults_follow_the_medium_unless_given():
 
 def test_unknown_medium_is_rejected():
     r = run_cli("--image", "x.png", "--medium", "oil", "plan")
-    assert r.returncode == 2 and "invalid choice" in r.stderr
+    assert r.returncode == 2 and "invalid medium_name value" in r.stderr
 
 
 def test_a_painting_frame_from_the_command_line(tmp_path):
@@ -72,3 +72,10 @@ def test_a_painting_frame_from_the_command_line(tmp_path):
     r = run_cli("--image", str(img), "--medium", "paint", "--seed", "1", "frame", "40", "-o", str(out), "--mono")
     assert r.returncode == 0, r.stderr
     assert Image.open(out).mode == "1"
+
+
+def test_draw_is_another_name_for_the_pencil_path_and_painting_for_paint():
+    from day_in_lines.media import medium_name
+    assert [medium_name(m) for m in ("draw", "pencil", "drawing", "paint", "painting")] == ["pencil"] * 3 + ["paint"] * 2
+    r = run_cli("--image", "x.png", "--medium", "oil", "plan")
+    assert r.returncode == 2 and "invalid medium_name value" in r.stderr

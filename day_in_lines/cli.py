@@ -14,7 +14,7 @@ from .constants import H, IMG_EXT, TOTAL, W
 from .displays import FileDisplay, WaveshareDisplay
 from .export import breakdown
 from .library import Library, bake_image
-from .media import DEFAULT_GAMMA, MEDIA, PHASE_NAMES, new_sheet, plan
+from .media import DEFAULT_GAMMA, PHASE_NAMES, medium_name, new_sheet, plan
 from .planner import Look
 from .render import dither_1bit
 from .schedule import Overrides, parse_end, schedule, window
@@ -197,8 +197,9 @@ def main():
     ap.add_argument("--image", help="image file, or a folder (one picture per day); not needed for `check`")
     ap.add_argument("--seed", type=int, default=None, help="fixed seed (default: the date)")
     ap.add_argument("--fit", choices=["crop", "pad"], default="crop", help="fill the sheet, or keep the whole image")
-    ap.add_argument("--medium", choices=MEDIA, default="pencil",
-                    help="pencil sketch on animation paper, or palette-knife painting on a blank canvas")
+    ap.add_argument("--medium", type=medium_name, default="pencil", metavar="{draw,paint}",
+                    help="two paths: `draw` (or `pencil`, the default) invents pencil marks for any image; "
+                         "`paint` takes a painting apart into its own strokes and replays it on a blank canvas")
     ap.add_argument("--detail", type=float, default=1.0, metavar="X",
                     help="more fine lines and tighter hatching above 1.0, fewer below (0.5-2)")
     ap.add_argument("--contrast", type=float, default=1.0, metavar="X",

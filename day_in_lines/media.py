@@ -6,6 +6,15 @@ from .planner import Look, build_plan
 from .render import Sheet
 
 MEDIA = ("pencil", "paint")
+ALIASES = {"draw": "pencil", "drawing": "pencil", "painting": "paint"}   # one path for drawing, one for painting
+
+
+def medium_name(text):
+    """argparse type: accept `draw` for the pencil path as well as `pencil`."""
+    name = ALIASES.get(text, text)
+    if name not in MEDIA:
+        raise ValueError(text)
+    return name
 DEFAULT_GAMMA = {"pencil": 2.4, "paint": 1.6}      # how much to darken mid-tones before 1-bit dithering
 PHASE_NAMES = {                                    # the four phases, as each medium calls them
     "pencil": {"composition": "composition", "linework": "linework", "shading": "shading", "finishing": "finishing"},
