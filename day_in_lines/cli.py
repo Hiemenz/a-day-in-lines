@@ -121,6 +121,17 @@ def run(args):
             print(f"uploads need the key: open http://<this-pi>:{args.serve}/?key={key}", flush=True)
         else:
             print("uploads are open to anyone who can reach this port (--open-uploads)", flush=True)
+    if args.slack_channel:
+        import os
+        from .slack_app import Desk, start_slack
+        tokens = os.environ.get("SLACK_BOT_TOKEN"), os.environ.get("SLACK_APP_TOKEN")
+        if not all(tokens):
+            sys.exit("--slack-channel needs SLACK_BOT_TOKEN (xoxb-...) and SLACK_APP_TOKEN (xapp-...) in the environment")
+        try:
+            start_slack(Desk(lib, overrides, start, dur, live), *tokens, args.slack_channel,
+                        [u for u in (args.slack_users or "").replace(",", " ").split() if u])
+        except ImportError:
+            sys.exit("--slack-channel needs slack_bolt: pip install -r requirements-slack.txt")
     print(f"drawing each day {start:%H:%M}-{(dt.datetime.combine(dt.date.min, start) + dur):%H:%M}"
           f" ({dur.total_seconds() / 60 / TOTAL:.2g} min per drawing event)", flush=True)
 
@@ -241,6 +252,10 @@ def main():
     sr.add_argument("--cache", default="~/.cache/a-day-in-lines")
     sr.add_argument("--serve", type=int, default=0, metavar="PORT",
                     help="serve the viewer on this port: watch live, upload any image from your phone")
+    sr.add_argument("--slack-channel", default=None, metavar="ID",
+                    help="take pictures from this Slack channel (its ID, like C0123ABCD; needs SLACK_BOT_TOKEN and SLACK_APP_TOKEN)")
+    sr.add_argument("--slack-users", default=None, metavar="IDS",
+                    help="only these Slack user IDs (comma-separated) can change the display from the channel; everyone there can look")
     sr.add_argument("--scan-every", type=int, default=60, metavar="SEC",
                     help="how often to look for new pictures in the folder")
     sr.add_argument("--mono", action=argparse.BooleanOptionalAction, default=True)
