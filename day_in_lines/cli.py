@@ -16,8 +16,9 @@ from .export import breakdown
 from .library import Library, bake_image
 from .media import DEFAULT_GAMMA, PHASE_NAMES, medium_name, new_sheet, plan
 from .planner import Look
+from .prompts import describe, render as render_prompts
 from .render import dither_1bit
-from .schedule import Overrides, parse_end, schedule, window
+from .schedule import Overrides, parse_end, progress, schedule, snap, window
 from .server import Live, serve
 
 
@@ -124,6 +125,9 @@ def run(args):
     print(f"drawing each day {start:%H:%M}-{(dt.datetime.combine(dt.date.min, start) + dur):%H:%M}"
           f" ({dur.total_seconds() / 60 / TOTAL:.2g} min per drawing event)", flush=True)
 
+    if args.update_every > 1:
+        print(f"updating the display every {args.update_every} minutes", flush=True)
+
     key, shown, since_full = None, -1, 0
     while True:
         try:
@@ -136,18 +140,21 @@ def run(args):
 
 
 def tick(args, disp, lib, live, overrides, start, dur, key, shown, since_full):
-    """One minute of the clock: put the right frame up, then wait for the next minute."""
+    """One minute of the clock: put the right frame up, then wait for the next minute.
+    With --update-every N the frame only advances on every Nth minute of the clock."""
     now = dt.datetime.now()
     new_key, h, k, started, finish = schedule(now, start, dur, overrides, lib)
     if new_key is None:
         print(f"no pictures yet in {lib.src}; waiting", flush=True)
         live.wake.wait(30)
         return key, shown, since_full
+    if args.update_every > 1:
+        k = progress(snap(now, args.update_every), started, finish - started)
     lib.ensure(h)                    # normally already baked by the watcher
     full = new_key != key
     key = new_key
     if k != shown or full:
-        since_full += 1
+        since_full = 0 if full else since_full + 1       # a full refresh for any reason restarts the count
         if args.full_refresh_every and since_full >= args.full_refresh_every:
             full, since_full = True, 0
         with Image.open(lib.frame(h, k)) as img:          # static: just open this minute's frame
@@ -226,6 +233,9 @@ def main():
     sv = sub.add_parser("preview", help="final frame, hourly contact sheet, timelapse")
     sv.add_argument("-o", "--outdir", default="preview")
     sv.add_argument("--every", type=int, default=6)
+    sq = sub.add_parser("prompts", help="text-to-image prompts that scaffold a new picture in this picture's style")
+    sq.add_argument("--subject", default="a new scene", help="what the new picture shows")
+    sq.add_argument("-o", "--out", default=None, help="write the prompts to this file instead of printing them")
     sc = sub.add_parser("check", help="try the display with a test card before the first long run")
     sc.add_argument("--display", default="file", help="'file' or 'waveshare:<module>'")
     sc.add_argument("--out", default="check.png")
@@ -254,11 +264,15 @@ def main():
     sr.add_argument("--keep", type=int, default=10, metavar="N",
                     help="free stored frames that can't be shown again: those made with older settings, and those of "
                          "pictures deleted from the folder beyond the newest N (-1 = never delete anything)")
-    sr.add_argument("--full-refresh-every", type=int, default=120,
-                    help="full (blinking) refresh every N updates to clear ghosting (default 120 = every two hours); 0 = never")
+    sr.add_argument("--update-every", type=int, default=1, metavar="MIN",
+                    help="advance the display only every MIN minutes (default 1: a partial refresh every minute)")
+    sr.add_argument("--full-refresh-every", type=int, default=20,
+                    help="full (blinking) refresh every N updates to clear ghosting (default 20); 0 = never")
     args = ap.parse_args()
     if args.cmd != "check" and not args.image:
         ap.error("--image is required")
+    if getattr(args, "update_every", 1) < 1:
+        ap.error("--update-every must be at least 1")
     if not (0.5 <= args.detail <= 2 and 0.5 <= args.contrast <= 2):
         ap.error("--detail and --contrast must be between 0.5 and 2")
 
@@ -284,6 +298,10 @@ def main():
             print(f"  {lib.data['images'][h]['name']}: {time.time() - t0:.0f}s")
         return
     image = pick_image(Path(args.image).expanduser(), today)
+    if args.cmd == "prompts":
+        text = render_prompts(look_of(args).medium, args.subject, describe(image), look_of(args))
+        Path(args.out).write_text(text + "\n") if args.out else print(text)
+        return
     if args.cmd == "plan":
         st = dt.datetime.strptime(args.start, "%H:%M").time()
         t0, dur = dt.datetime.combine(today, st), window(st, parse_end(args.end))

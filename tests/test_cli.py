@@ -79,3 +79,30 @@ def test_draw_is_another_name_for_the_pencil_path_and_painting_for_paint():
     assert [medium_name(m) for m in ("draw", "pencil", "drawing", "paint", "painting")] == ["pencil"] * 3 + ["paint"] * 2
     r = run_cli("--image", "x.png", "--medium", "oil", "plan")
     assert r.returncode == 2 and "invalid medium_name value" in r.stderr
+
+
+def test_prompts_scaffold_four_phases(tmp_path):
+    from PIL import Image
+    from day_in_lines.prompts import build, describe, phase_minutes
+    img = tmp_path / "a.png"
+    Image.new("L", (80, 48), 40).save(img)
+    traits = describe(img)
+    assert "dark" in traits[0]
+    for medium in ("pencil", "paint"):
+        mins = phase_minutes(medium)
+        assert mins[0][1] == 1 and mins[-1][2] == 720
+        assert len(build(medium, "a ship", traits)) == 4
+
+
+def test_prompts_transparent_and_colour(tmp_path):
+    from PIL import Image
+    from day_in_lines.prompts import build, describe
+    clear = tmp_path / "clear.png"
+    Image.new("RGBA", (80, 48), (0, 0, 0, 0)).save(clear)                  # all transparent = blank paper
+    assert "light" in describe(clear)[0]
+    red = tmp_path / "red.png"
+    Image.new("RGB", (80, 48), (200, 30, 30)).save(red)
+    assert "mostly red hues" in describe(red)
+    stages = build("paint", "  ", describe(red))
+    assert stages[0][2].startswith("a new scene, ") and "previous stage" in stages[1][2] and "previous stage" not in stages[0][2]
+    assert "black and white, suits" not in stages[0][2]
