@@ -30,6 +30,12 @@ def progress(now: dt.datetime, began: dt.datetime, dur: dt.timedelta) -> int:
     return min(TOTAL, int((now - began) / dur * TOTAL))
 
 
+def snap(now: dt.datetime, minutes: int) -> dt.datetime:
+    """`now` rounded down to a multiple of `minutes` on the clock (:00, :04, :08 ... for 4)."""
+    m = now.hour * 60 + now.minute
+    return now.replace(hour=m // minutes * minutes // 60 % 24, minute=m // minutes * minutes % 60, second=0, microsecond=0)
+
+
 def drawing_day(now, start, dur=dt.timedelta(minutes=TOTAL)):
     """(day, events that should be on the sheet). Before today's start, it is still
     yesterday's drawing: finished, or still going if it runs past midnight."""

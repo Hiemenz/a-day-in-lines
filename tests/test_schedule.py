@@ -111,3 +111,12 @@ def test_a_new_queued_upload_never_bumps_one_already_promised_a_time(tmp_path):
     ov.add("c", D(2026, 3, 10, 7), D(2026, 3, 10, 19), fixed=False)
     b = next(o for o in ov._load() if o["hash"] == "b")
     assert dt.datetime.fromisoformat(b["start"]) == promised
+
+
+def test_snap_rounds_down_to_the_clock():
+    from day_in_lines.schedule import snap
+    now = dt.datetime(2026, 1, 1, 13, 7, 41)
+    assert snap(now, 4) == dt.datetime(2026, 1, 1, 13, 4)
+    assert snap(now, 5) == dt.datetime(2026, 1, 1, 13, 5)
+    assert snap(now, 1) == dt.datetime(2026, 1, 1, 13, 7)
+    assert snap(dt.datetime(2026, 1, 1, 0, 2, 5), 3) == dt.datetime(2026, 1, 1, 0, 0)

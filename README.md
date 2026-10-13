@@ -185,6 +185,7 @@ Global options go before the command: `python3 a_day_in_lines.py --image PATH [-
 | `breakdown` | Exposure sheet, offline viewer and optional per-event frames (`-o`, `--start`, `--end`, `--frames N`) |
 | `check` | Try the display with a test card (`--display`, `--out`, `--size`, `--gamma`); no `--image` needed |
 | `frame K` | Render the sheet after K minutes (`-o file.png`, `--mono` for the 1-bit panel look, `--gamma`) |
+| `prompts` | Text-to-image prompts that scaffold a new picture in this picture's style (`--subject "..."`, `-o file`; see below) |
 | `preview` | Final sheet, e-ink frame, hourly contact sheet and timelapse GIF (`-o dir/`, `--every N`) |
 
 Options for `run`:
@@ -202,10 +203,20 @@ Options for `run`:
 | `--scan-every SEC` | `60` | How often to look for new pictures |
 | `--mono / --no-mono` | mono | Store 1-bit frames, or greyscale frames that are dithered when shown |
 | `--gamma` | `2.4` pencil, `1.6` paint | Darkens mid-tones before dithering; higher is darker |
-| `--full-refresh-every N` | `120` | A full (blinking) refresh every N updates (two hours at one a minute) to clear ghosting; 0 = never |
+| `--update-every MIN` | `1` | Advance the display only every MIN minutes (default: a partial refresh every minute) |
+| `--full-refresh-every N` | `20` | A full (blinking) refresh every N updates to clear ghosting; 0 = never |
 | `--cache` | `~/.cache/a-day-in-lines` | Where processed pictures, `library.json` and the upload queue live |
 
 **Seeds:** on the display (`run`, `bake`) each picture's seed comes from its contents, so it gets its own fixed hand and never needs processing again. The one-off commands (`plan`, `frame`, `preview`, `breakdown`) default to the date as the seed, so the same picture comes out slightly differently on another day. `--seed` fixes it everywhere.
+
+## Prompts for a new picture in the same style
+
+```bash
+python3 a_day_in_lines.py --image ~/pictures/ship.jpg prompts --subject "a lighthouse at dusk"
+python3 a_day_in_lines.py --image ~/paintings --medium paint prompts --subject "a harbour" -o prompts.txt
+```
+
+`prompts` reads the picture's tone (dark, mid or light), contrast, busyness and, if it has colour, its main hue, and writes four text-to-image prompts, one per drawing phase with its minute range: the loose composition lines, the linework, the shading, and the finished picture. They share one style line (pencil on animation paper, or palette-knife paint in colour; 5:3 landscape for the 800×480 panel), and each stage after the first asks for the same picture as the one before, so generating the four in order, each from the one before, scaffolds the new picture the way the display builds up its day. `--detail` and `--contrast` change the style line.
 
 ## Run at boot
 
@@ -219,16 +230,20 @@ The unit assumes user `pi`, the repo in `~/a-day-in-lines`, pictures in `~/pictu
 
 ## How it behaves
 
-- **Every minute:** the stored frame for that point in the drawing is pushed with a partial refresh. Each frame differs from the one before it only by the new strokes. The frames use a blue-noise threshold dither. Like the Bayer matrix it replaces, it is a fixed threshold per pixel, so only pixels under a new stroke change and the panel never shimmers; unlike Bayer it has no regular lattice, so tones don't show a crosshatch grid.
+- **Every minute (or every `--update-every` minutes):** the stored frame for that point in the drawing is pushed with a partial refresh. The `epd7in5_V2` driver has no `display_Partial` of its own, so `day_in_lines/epd_partial.py` adds one, and only the changed region is refreshed. A module that still has none does a full, blinking refresh each time; raise `--update-every` for it. Each frame differs from the one before it only by the new strokes. The frames use a blue-noise threshold dither. Like the Bayer matrix it replaces, it is a fixed threshold per pixel, so only pixels under a new stroke change and the panel never shimmers; unlike Bayer it has no regular lattice, so tones don't show a crosshatch grid.
 - **Reboots:** the current minute's stored frame is opened straight away, including for an uploaded picture that is mid-drawing. Nothing is rebuilt.
 - **Before the start time:** the last finished drawing stays up. At the start time the sheet clears to blank paper, which is the day's one full refresh.
 - **Errors:** if a frame can't be shown (a display hiccup, a missing file), the error is logged and the display tries again 30 seconds later with a full refresh, instead of exiting.
-- **Ghosting:** some panels build up ghosting after many partial refreshes, so a full (blinking) refresh happens every 120 updates by default (every two hours at one a minute). Lower `--full-refresh-every` if you still see ghosts; the image itself is unchanged.
+- **Ghosting:** some panels build up ghosting after many partial refreshes, so a full (blinking) refresh happens every 20 updates by default (every 20 minutes at one a minute). Lower `--full-refresh-every` if you still see ghosts; the image itself is unchanged.
 - **Other panels:** `--display waveshare:<module>` takes any Waveshare module; partial refresh is used where the module supports `display_Partial`. Use `--fit pad` to keep the whole image instead of cropping it to 5:3.
+
+## Partial refresh on the 7.5" V2
+
+Waveshare's older `epd7in5_V2` driver has no partial refresh, so every update used to be a full, blinking one. `day_in_lines/epd_partial.py` adds it: each minute only the box around the new strokes is refreshed, and a full refresh runs every 20 updates (`--full-refresh-every`) to clear ghosting. I could only test this against a fake driver, so run `check --display waveshare:epd7in5_V2` once first: it should show the test card, then add a circle without a blink.
 
 ## Panel wear
 
-By default the panel gets one partial refresh a minute (720 a day) and a full, blinking refresh every two hours, and the program puts it to sleep after every update. A drawing that finishes before the next start time stays up as it is. Check your panel's datasheet for its recommended refresh interval and expected life; if the default is more than it likes, a shorter drawing day (`--start 09:00 --end 17:00`) gives several events per update and so fewer refreshes, and `--full-refresh-every` sets how often the full refresh happens.
+By default a panel with partial refresh gets one a minute (720 a day) and a full, blinking refresh every `--full-refresh-every` updates; a panel without it blinks on every update (raise `--update-every` for it), and the program puts it to sleep after every update. A drawing that finishes before the next start time stays up as it is. Check your panel's datasheet for its recommended refresh interval and expected life; if the default is more than it likes, `--update-every` raises the interval, a shorter drawing day (`--start 09:00 --end 17:00`) gives several events per update, and `--full-refresh-every` sets how often the full refresh happens.
 
 ## Troubleshooting
 
