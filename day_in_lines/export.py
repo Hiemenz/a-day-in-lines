@@ -14,14 +14,15 @@ from .planner import Look
 
 
 def viewer_plan(events) -> str:
-    """Compact JSON the viewer page reads: [phase, label, [[p, w, taper, delta-encoded pts x2], ...]]."""
+    """Compact JSON the viewer page reads: [phase, label, [[p, w, taper, delta-encoded pts x2, kind 0 ink / 1 guide / 2 erase], ...]]."""
     out = []
     for e in events:
         ss = []
         for s in e["strokes"]:
             p = np.round(np.asarray(s["pts"]) * 2).astype(int)
             flat = [int(p[0, 0]), int(p[0, 1])] + np.diff(p, axis=0).ravel().tolist()
-            ss.append([round(s["p"], 2), round(s["w"], 2), 1 if s["taper"] else 0, flat])
+            ss.append([round(s["p"], 2), round(s["w"], 2), 1 if s["taper"] else 0, flat,
+                       {"guide": 1, "erase": 2}.get(s.get("kind"), 0)])
         out.append([e["phase"][0], e["label"], ss])
     return json.dumps(out, separators=(",", ":"))
 

@@ -223,6 +223,76 @@ def group_paths(paths, budget_len, radius, rng):
     return groups
 
 
+def rdp(pts, eps):
+    """Ramer-Douglas-Peucker: the fewest corners that stay within eps of the path."""
+    a, b = pts[0], pts[-1]
+    ab = b - a
+    n = float(np.hypot(*ab))
+    d = np.hypot(*(pts - a).T) if n < 1e-9 else np.abs(ab[0] * (pts[:, 1] - a[1]) - ab[1] * (pts[:, 0] - a[0])) / n
+    i = int(np.argmax(d))
+    if d[i] <= eps or len(pts) < 3:
+        return [a, b]
+    return rdp(pts[:i + 1], eps)[:-1] + rdp(pts[i:], eps)
+
+
+def guide(strokes, kind="guide"):
+    for s in strokes:
+        s["kind"] = kind
+    return strokes
+
+
+def construction_events(pen, rng, tone, coarse):
+    """Straight, faint guide lines: a box round the subject, its centre lines, then the
+    big shapes reduced to straight segments."""
+    ys, xs = np.nonzero(ndi.gaussian_filter(tone, 2.0) > .2)
+    if len(xs) > 200:
+        x0, x1 = np.percentile(xs, (3, 97)); y0, y1 = np.percentile(ys, (3, 97))
+    else:
+        x0, x1, y0, y1 = 40, W - 40, 30, H - 30
+    x0, x1, y0, y1 = max(x0 - 8, 6), min(x1 + 8, W - 6), max(y0 - 8, 6), min(y1 + 8, H - 6)
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+
+    def seg(a, b, p, over=8):
+        return pen.line([a, b], p=p, w=.8, wob=.7, over=over)
+
+    events = [
+        ev("composition", "bounding box", guide(sum([seg(a, b, .15) for a, b in (
+            ((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0)))], []))),
+        ev("composition", "centre lines", guide(seg((cx, y0), (cx, y1), .11) + seg((x0, cy), (x1, cy), .11))),
+    ]
+    segs = []
+    for p in coarse:
+        c = rdp(np.asarray(p["pts"], float)[::2], 9.0)
+        for a, b in zip(c[:-1], c[1:]):
+            L = float(np.hypot(*(b - a)))
+            if L >= 16:
+                segs.append(dict(pts=np.array([a, (a + b) / 2, b]), score=p["score"] * L / (length(p["pts"]) + 1e-9),
+                                 dark=p["dark"]))
+    for grp in group_paths(segs, 150, 70, rng):
+        st = []
+        for s in grp:
+            st += seg(s["pts"][0], s["pts"][-1], .13 + .07 * s["dark"], over=10)
+        events.append(ev("composition", "construction line", guide(st)))
+    return events
+
+
+def erase_events(guide_ev, rng, sweeps=18):
+    """Rub the guides out again: the same lines, scrubbed to and fro with an eraser, in a few sweeps."""
+    lines = [s["pts"] for e in guide_ev for s in e["strokes"]]
+    if not lines:
+        return []
+    order = rng.permutation(len(lines))
+    out = []
+    for chunk in np.array_split(order, min(sweeps, len(lines))):
+        st = []
+        for i in chunk:
+            q = np.asarray(lines[i], np.float32)
+            back = q[::-1] + rng.normal(0, 1.2, (1, 2)).astype(np.float32)
+            st.append(dict(pts=np.vstack([q, back]), p=1.0, w=4.5, taper=False, ph=0.0, kind="erase"))
+        out.append(ev("shading", "erase construction lines", st))
+    return out
+
+
 def build_plan(image: Path, seed: int, fit_mode="crop", look: Look = Look()):
     rng = np.random.default_rng([seed, 1])
     pen = Pen(rng)
@@ -232,16 +302,13 @@ def build_plan(image: Path, seed: int, fit_mode="crop", look: Look = Look()):
     lo = lambda v: float(np.clip(v - shift, 50, 98))
     phases = {}
 
-    # ---- composition: the big shapes, loosely --------------------------
+    # ---- composition: straight construction lines, erased later ----------
+    # A box round the subject, its centre lines, then the big shapes as straight
+    # segments. They go on a separate guide layer so they can be rubbed out again.
     coarse, _ = contour_paths(gray, tone, 6.0, 70, 92, 30, 160, rng)
     coarse = sorted(coarse, key=lambda p: -p["score"])[:90]
-    comp = []
-    for grp in group_paths(coarse, 150, 70, rng):
-        st = []
-        for p in grp:
-            st += pen.line(p["pts"][::3], p=.15 + .08 * p["dark"], w=.9, wob=1.4, over=7)
-        comp.append(ev("composition", "construction line", st))
-    phases["composition"] = comp
+    guide_ev = construction_events(pen, rng, tone, coarse)
+    phases["composition"] = guide_ev
 
     # ---- linework: contours coarse -> fine --------------------------------
     med, med_e = contour_paths(gray, tone, 2.6, lo(72), lo(93), 14, 110, rng)
@@ -295,9 +362,6 @@ def build_plan(image: Path, seed: int, fit_mode="crop", look: Look = Look()):
         for p in grp:
             st += pen.line(p["pts"], p=.82, w=1.15, wob=.35)
         accent.append(ev("finishing", "accent line", st))
-    for p in rng.choice(len(coarse), size=min(6, len(coarse)), replace=False) if coarse else []:
-        accent.append(ev("finishing", "restated construction", pen.line(coarse[p]["pts"][::3] + rng.normal(0, 1.5, 2),
-                                                                        p=.2, wob=1.6, over=6)))
     rng.shuffle(accent)
     phases["finishing"] = accent
 
@@ -306,7 +370,8 @@ def build_plan(image: Path, seed: int, fit_mode="crop", look: Look = Look()):
     out = {}
     for k in ("composition", "linework", "finishing"):
         out[k] = fit(phases[k], sizes[k])
-    out["shading"] = fit(shade, TOTAL - sum(len(v) for v in out.values()))
+    rub = erase_events(guide_ev, rng)       # the guides come out before the shading goes in
+    out["shading"] = rub + fit(shade, TOTAL - sum(len(v) for v in out.values()) - len(rub))
     events = [e for k, _ in PHASES for e in out[k]]
     if len(events) != TOTAL:   # tiny/empty images: pad with quiet restatements
         while len(events) < TOTAL:

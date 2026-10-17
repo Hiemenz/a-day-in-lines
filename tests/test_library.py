@@ -136,7 +136,7 @@ def test_folder_name_changes_with_settings_and_version(tmp_path):
     make_png(src / "a.png")
     (h,) = lib.scan()
     plain = lib.dir(h).name
-    assert plain.endswith("-v2") and "-d" not in plain
+    assert plain.endswith("-v3") and "-d" not in plain
     other = Library(tmp_path / "cache", src, "crop", look=Look(1.5, 1.0))
     other.data = lib.data
     assert other.dir(h).name != plain and "-d1.5-c1" in other.dir(h).name
@@ -149,7 +149,7 @@ def test_paint_frames_are_kept_apart_from_pencil_frames(tmp_path):
     paint = Library(tmp_path / "cache", src, "crop", look=Look(medium="paint"))
     paint.data = lib.data
     assert paint.dir(h).name != lib.dir(h).name
-    assert paint.dir(h).name.endswith("-paint-v2") and "paint" not in lib.dir(h).name
+    assert paint.dir(h).name.endswith("-paint-v3") and "paint" not in lib.dir(h).name
 
 
 def test_prune_frees_old_settings_and_missing_pictures_but_not_live_ones(tmp_path):

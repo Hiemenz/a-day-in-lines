@@ -48,7 +48,7 @@ python3 a_day_in_lines.py --image ~/pictures run --display waveshare:epd7in5_V2 
 | `day_in_lines/` | The program, one module per job: `planner` (pencil plan), `paint` (paint plan and renderer), `render` (graphite, dither), `library` (processing and storage), `schedule`, `server`, `submit` (queueing an upload), `slack_app`, `displays`, `export`, `cli` |
 | `tests/` | The pytest suite (`python3 -m pytest`) |
 | `viewer.html` | The viewer page the Pi serves. Keep it next to the program; the program fills in the live drawing |
-| `web/standalone.html` | The same viewer as one offline page with a sample drawing built in. Open it in any browser to break down your own images; no Pi needed |
+| `web/standalone.html` | The same viewer as one offline page with a sample drawing built in. Open it in any browser to break down your own images; no Pi needed (rebuild it with `python web/build_standalone.py` after changing the viewer or planner) |
 | `examples/tanker.png` | Sample image |
 | `docs/` | The images in this README: final sheet, e-ink frame, hourly contact sheet, timelapse, and the same for paint |
 | `systemd/day-in-lines.service` | Runs the display at boot |
@@ -63,10 +63,10 @@ With the default 07:00–19:00 day, one event is added each minute; with `--star
 
 | Minutes | Phase | What appears |
 |---|---|---|
-| 1–40 | Composition | Faint, loose construction lines of the big shapes, found by coarse edge detection |
+| 1–40 | Composition | Straight, faint construction lines that are not in the finished drawing: a box round the subject, its centre lines, then the big shapes as straight segments (coarse edges simplified to a few corners) |
 | 41–270 | Linework | Contours from coarse to fine, strongest first, then thin dark lines (masts, rigging) and fine detail |
-| 271–670 | Shading | Hatching in six layers, light to dark, each at its own angle, nudged to follow the image's local flow. Each minute works one irregular patch, and patches are visited in a wandering order, not swept row by row |
-| 671–720 | Finishing | Darkest accents, re-stated strong edges, a few stray construction marks |
+| 271–670 | Shading | The first 18 minutes rub the construction lines out with an eraser (the lines in the drawing itself stay). Then hatching in six layers, light to dark, each at its own angle, nudged to follow the image's local flow. Each minute works one irregular patch, and patches are visited in a wandering order, not swept row by row |
+| 671–720 | Finishing | Darkest accents and re-stated strong edges |
 
 Every line goes through a simulated pencil: a slight wobble, overshoot at the ends, a taper, varying pressure, and graphite that catches on the paper grain. The plan is deterministic for a given image and seed.
 

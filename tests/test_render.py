@@ -61,3 +61,36 @@ def test_sheet_starts_nearly_blank_and_darkens():
     assert blank > 250
     sh.draw_stroke(dict(pts=np.array([[50, 50], [300, 80]], np.float32), p=.9, w=1.0, taper=True, ph=0.0))
     assert np.asarray(sh.gray()).mean() < blank
+
+
+def stroke(kind, w=1.0):
+    pts = np.array([[100, 100], [200, 100]], np.float32)
+    return dict(pts=pts, p=.9, w=w, taper=False, ph=0.0, kind=kind)
+
+
+def test_guide_lines_can_be_erased_but_real_lines_stay():
+    sh = Sheet(1, pegs=False)
+    sh.draw_stroke(stroke("guide"))
+    sh.draw_stroke(dict(stroke(None), pts=np.array([[100, 200], [200, 200]], np.float32)))
+    guide_row, ink_row = sh.ink()[200, 300:400].mean(), sh.ink()[400, 300:400].mean()
+    assert guide_row > .05 and ink_row > .05
+    sh.draw_stroke(stroke("erase", 4.5))
+    assert sh.ink()[200, 300:400].mean() < guide_row * .05
+    assert np.isclose(sh.ink()[400, 300:400].mean(), ink_row)
+
+
+def test_plan_draws_guides_early_and_erases_them_all(plan):
+    kinds = [[s.get("kind") for s in e["strokes"]] for e in plan]
+    assert all(k == "guide" for e in kinds[:40] for k in e) and any(kinds[:40])
+    erasing = [i for i, e in enumerate(plan) if e["label"] == "erase construction lines"]
+    assert erasing and min(erasing) >= 230
+    assert not any(k == "guide" for e in kinds[40:] for k in e)
+    assert len(plan) == 720
+
+
+def test_viewer_plan_carries_the_stroke_kind(plan):
+    import json
+    from day_in_lines.export import viewer_plan
+    out = json.loads(viewer_plan(plan))
+    kinds = {s[4] for e in out for s in e[2]}
+    assert kinds == {0, 1, 2}
