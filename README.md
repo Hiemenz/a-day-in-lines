@@ -45,14 +45,15 @@ python3 a_day_in_lines.py --image ~/pictures run --display waveshare:epd7in5_V2 
 | Path | What it is |
 |---|---|
 | `a_day_in_lines.py` | Launcher: `python3 a_day_in_lines.py ...` runs everything below |
-| `day_in_lines/` | The program, one module per job: `planner` (pencil plan), `paint` (paint plan and renderer), `render` (graphite, dither), `library` (processing and storage), `schedule`, `server`, `displays`, `export`, `cli` |
+| `day_in_lines/` | The program, one module per job: `planner` (pencil plan), `paint` (paint plan and renderer), `render` (graphite, dither), `library` (processing and storage), `schedule`, `server`, `submit` (queueing an upload), `slack_app`, `displays`, `export`, `cli` |
 | `tests/` | The pytest suite (`python3 -m pytest`) |
 | `viewer.html` | The viewer page the Pi serves. Keep it next to the program; the program fills in the live drawing |
-| `web/standalone.html` | The same viewer as one offline page with a sample drawing built in. Open it in any browser to break down your own images; no Pi needed |
+| `web/standalone.html` | The same viewer as one offline page with a sample drawing built in. Open it in any browser to break down your own images; no Pi needed (rebuild it with `python web/build_standalone.py` after changing the viewer or planner) |
 | `examples/tanker.png` | Sample image |
 | `docs/` | The images in this README: final sheet, e-ink frame, hourly contact sheet, timelapse, and the same for paint |
 | `systemd/day-in-lines.service` | Runs the display at boot |
 | `requirements.txt` | numpy, scipy, Pillow, scikit-image |
+| `requirements-slack.txt` | slack_bolt, only for the Slack channel |
 | `requirements-dev.txt` | pytest, for the tests |
 | `LICENSE` | MIT |
 
@@ -62,10 +63,10 @@ With the default 07:00–19:00 day, one event is added each minute; with `--star
 
 | Minutes | Phase | What appears |
 |---|---|---|
-| 1–40 | Composition | Faint, loose construction lines of the big shapes, found by coarse edge detection |
+| 1–40 | Composition | Straight, faint construction lines that are not in the finished drawing: a box round the subject, its centre lines, then the big shapes as straight segments (coarse edges simplified to a few corners) |
 | 41–270 | Linework | Contours from coarse to fine, strongest first, then thin dark lines (masts, rigging) and fine detail |
-| 271–670 | Shading | Hatching in six layers, light to dark, each at its own angle, nudged to follow the image's local flow. Each minute works one irregular patch, and patches are visited in a wandering order, not swept row by row |
-| 671–720 | Finishing | Darkest accents, re-stated strong edges, a few stray construction marks |
+| 271–670 | Shading | The first 18 minutes rub the construction lines out with an eraser (the lines in the drawing itself stay). Then hatching in six layers, light to dark, each at its own angle, nudged to follow the image's local flow. Each minute works one irregular patch, and patches are visited in a wandering order, not swept row by row |
+| 671–720 | Finishing | Darkest accents and re-stated strong edges |
 
 Every line goes through a simulated pencil: a slight wobble, overshoot at the ends, a taper, varying pressure, and graphite that catches on the paper grain. The plan is deterministic for a given image and seed.
 
@@ -153,6 +154,46 @@ Open `http://<pi-address>:8080/` on any device on your network.
 - **When an upload hands back:** a finished upload stays up until the next start time, like any day's drawing. If it finishes early in a day's drawing time (an upload started in the evening finishing the next morning), the day's drawing takes over straight away, part-drawn, instead of leaving the panel idle for a day.
 - **Who can upload:** only a viewer opened with the key, as `http://<pi-address>:8080/?key=...`. Watching needs no key. The first time it runs with `--serve`, the program makes a key, keeps it in `~/.cache/a-day-in-lines/upload_key` and prints the address with the key in the log (`journalctl -u day-in-lines`), so a bookmark keeps working across restarts. Choose your own with `--upload-key WORD`, or let anyone on the network upload with `--open-uploads`. Uploads are limited to 40 MB and 60 megapixels, must be real images, and are stored under safe names. To make the viewer reachable only from the Pi itself, use `--bind 127.0.0.1`.
 
+## Sending pictures from Slack
+
+A dedicated Slack channel can take the pictures instead of the web page. The Pi connects out to Slack (Socket Mode), so it needs no public address, and it listens to that one channel only; whoever is in the channel can send pictures, so make it private.
+
+**One-time setup.** Create a Slack app (api.slack.com/apps), turn on Socket Mode, and add the bot scopes `chat:write`, `files:read`, `files:write` and `channels:history` (`groups:history` for a private channel), and subscribe to the bot events `message.channels` (or `message.groups`). Turn on Interactivity. Install it, invite the bot to the channel (`/invite @name`), and copy the channel's ID (channel details, at the bottom). Then:
+
+```bash
+pip install -r requirements-slack.txt
+export SLACK_BOT_TOKEN=xoxb-...      # Install App > Bot User OAuth Token
+export SLACK_APP_TOKEN=xapp-...      # Basic Information > App-Level Token with connections:write
+python3 a_day_in_lines.py --image ~/pictures run --serve 8080 --slack-channel C0123ABCD
+```
+
+For the service, put the two tokens in an environment file and add `EnvironmentFile=` and `--slack-channel` to the unit.
+
+**Using it.** Post a picture in the channel. Words in the same message choose how it goes on:
+
+| Say | Means |
+|---|---|
+| `from 300` | start at event 300 of 720: the sheet already holds the first 300 and the rest are drawn from there |
+| `from shading` | start at the beginning of a phase: `composition`, `linework`, `shading`, `finishing` (for paint also `blocking`, `underpainting`, `building`, `details`) |
+| `now` (default), `next`, `at 14:30` | when it begins: right away, at the next daily start, or at a clock time |
+| `finish by 22:00` | when it should be complete (default: the usual pace, so a late start finishes sooner) |
+| `every friday at 18:00`, `every weekday`, `every mon and thu`, `daily` | repeat it. Each occurrence goes on the schedule a day ahead, at the time given (or the daily start) |
+| `as paint`, `as pencil`, `detail 1.5`, `contrast 1.2` | make this picture differently from the display's setting. The picture keeps it, so it is made again once, and a painting uses the paint default gamma |
+
+A picture with no words gets two buttons: **Start now**, or **Choose when and where...**, a form with all of the choices above. After a start from part-way through, the bot posts the sheet as it will look at that spot.
+
+| Command | What it does |
+|---|---|
+| `browse` | The pictures the display has, newest first, five to a page, with a numbered contact sheet of them. Each has **Choose...** (the same form), **Preview spots** (the picture at 25%, 50%, 75% and 100%, to help pick a starting event) and **Delete...** (asks first; removes the file; refuses a picture that is on the display, queued or repeating) |
+| `queue` | What is drawing now, waiting, and repeating, each with **Cancel** or **Stop repeating**. Cancelling one occurrence of a repeat skips only that one |
+| `skip` | Drop the uploaded picture on the sheet; with none, give today a different picture, joining in progress |
+| `restart` | Draw what is on the display again from a blank sheet |
+| `status`, `help` | What is on the display now; this list |
+
+The bot answers in a thread and says exactly when each picture will start and finish. It also posts in the channel when the display starts a new picture, moves into a new phase, or finishes. The web page's upload also takes `&from=300`.
+
+Everyone in the channel can look. To limit who can change the display, give their Slack member IDs with `--slack-users U01ABC,U02DEF`; the bot records who sent each picture and shows it in `browse` and `queue`. The `files:write` scope is also needed, for the contact sheets.
+
 Uploaded images are saved into your picture folder (or `~/.cache/a-day-in-lines/uploads/` when `--image` is a single file), so they join the rotation and are processed once like any other. Formats the folder scan doesn't use, such as GIF, are stored as PNG.
 
 ## Breaking an image down without the display
@@ -196,6 +237,8 @@ Options for `run`:
 | `--start` | `07:00` | When each day's drawing begins |
 | `--end` | 12 h after `--start` | When each day's drawing is finished; can cross midnight (e.g. `--start 22:00 --end 06:00`) |
 | `--serve PORT` | off | Serve the viewer and accept uploads |
+| `--slack-channel ID` | off | Take pictures from this Slack channel (see Sending pictures from Slack) |
+| `--slack-users IDS` | everyone in the channel | Slack member IDs (comma-separated) allowed to change the display from the channel |
 | `--upload-key KEY` | made once, kept in the cache | The key uploads need, from the viewer opened as `?key=KEY` |
 | `--open-uploads` | off | Let anyone who can reach the port upload, no key |
 | `--bind ADDR` | `0.0.0.0` | Address the viewer listens on (`127.0.0.1` = this machine only) |

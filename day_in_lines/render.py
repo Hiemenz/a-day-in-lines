@@ -21,7 +21,8 @@ def make_grain(seed):
 class Sheet:
     def __init__(self, seed, pegs=True):
         self.seed = seed
-        self.canvas = np.ones((H * SS, W * SS), np.float32)
+        self.canvas = np.ones((H * SS, W * SS), np.float32)   # graphite that stays
+        self.guide = np.ones((H * SS, W * SS), np.float32)    # construction lines, which can be rubbed out
         self.grain = make_grain(seed)
         if not pegs:
             return
@@ -63,15 +64,25 @@ class Sheet:
                 d.ellipse([b[0] - r + .5, b[1] - r + .5, b[0] + r - .5, b[1] + r - .5], fill=int(255 * pr[i]))
         img = img.filter(ImageFilter.GaussianBlur(0.55))
         a = np.asarray(img, np.float32) / 255
+        kind = s.get("kind")
+        if kind == "erase":                      # the eraser lifts only the guide layer, grain and all
+            self.guide[y0:y1, x0:x1] = 1 - (1 - self.guide[y0:y1, x0:x1]) * (1 - np.clip(a * 1.4, 0, .985))
+            return
         a = a * np.clip(0.3 + 1.0 * self.grain[y0:y1, x0:x1], 0, 1.2)   # paper tooth
-        self.canvas[y0:y1, x0:x1] *= (1 - np.clip(a * 0.95, 0, 0.94))
+        layer = self.guide if kind == "guide" else self.canvas
+        layer[y0:y1, x0:x1] *= (1 - np.clip(a * 0.95, 0, 0.94))
+
+    @property
+    def surface(self):
+        """What is on the sheet now: lasting graphite and whatever guides are left."""
+        return self.canvas * self.guide
 
     def ink(self):
         """How much graphite is on the sheet, 0-1 per pixel."""
-        return 1 - self.canvas
+        return 1 - self.surface
 
     def gray(self, size=(W, H)) -> Image.Image:
-        img = Image.fromarray(np.clip(self.canvas * 255, 0, 255).astype(np.uint8), "L")
+        img = Image.fromarray(np.clip(self.surface * 255, 0, 255).astype(np.uint8), "L")
         return img.resize(size, Image.LANCZOS)
 
     def paper(self, size=None) -> Image.Image:
@@ -79,7 +90,7 @@ class Sheet:
         mott = np.asarray(Image.fromarray((r.random((H // 4, W // 4)) * 255).astype(np.uint8))
                           .resize((W * SS, H * SS), Image.BICUBIC), np.float32) / 255
         tint = PAPER_RGB * (0.985 + 0.03 * mott[..., None]) * (0.97 + 0.03 * self.grain[..., None])
-        rgb = tint * self.canvas[..., None] ** 1.05
+        rgb = tint * self.surface[..., None] ** 1.05
         out = Image.fromarray(np.clip(rgb * 255, 0, 255).astype(np.uint8), "RGB")
         return out.resize(size, Image.LANCZOS) if size else out
 

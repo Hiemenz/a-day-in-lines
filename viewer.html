@@ -176,11 +176,11 @@ let PLAN = [];
 
 // sample plan comes delta-encoded at 2x scale
 function decodeSample(raw) {
-  return raw.map(e => [e[0], e[1], e[2].map(([p, w, t, f]) => {
+  return raw.map(e => [e[0], e[1], e[2].map(([p, w, t, f, kd]) => {
     const n = f.length / 2, pts = new Float32Array(f.length);
     let x = f[0], y = f[1]; pts[0] = x; pts[1] = y;
     for (let i = 1; i < n; i++) { x += f[2 * i]; y += f[2 * i + 1]; pts[2 * i] = x; pts[2 * i + 1] = y; }
-    return [p, w, t, pts];
+    return [p, w, t, pts, kd || 0];
   })]);
 }
 
@@ -477,6 +477,63 @@ function fit(evs, n) {
   return evs;
 }
 
+// ---- construction lines: straight guides drawn first, rubbed out before the shading (kind 1 = guide, 2 = erase) ----
+const tag = (strokes, kind) => { for (const s of strokes) s[4] = kind; return strokes; };
+function rdp(pts, eps) {                                 // fewest corners that stay within eps of the path
+  const a = pts[0], b = pts[pts.length - 1], dx = b[0] - a[0], dy = b[1] - a[1], n = Math.hypot(dx, dy);
+  let bi = 0, bd = 0;
+  pts.forEach((q, i) => {
+    const d = n < 1e-9 ? Math.hypot(q[0] - a[0], q[1] - a[1]) : Math.abs(dx * (q[1] - a[1]) - dy * (q[0] - a[0])) / n;
+    if (d > bd) { bd = d; bi = i; }
+  });
+  if (bd <= eps || pts.length < 3) return [a, b];
+  return rdp(pts.slice(0, bi + 1), eps).slice(0, -1).concat(rdp(pts.slice(bi), eps));
+}
+function constructionEvents(pen, rng, tone, coarse) {
+  const soft = gauss(tone, 2), xs = [], ys = [];
+  for (let i = 0; i < W * H; i++) if (soft[i] > .2) { xs.push(i % W); ys.push((i / W) | 0); }
+  const pc = (a, f) => { a.sort((u, v) => u - v); return a[Math.round(f * (a.length - 1))]; };
+  let x0 = 40, x1 = W - 40, y0 = 30, y1 = H - 30;
+  if (xs.length > 200) { x0 = pc(xs, .03); x1 = pc(xs, .97); y0 = pc(ys, .03); y1 = pc(ys, .97); }
+  x0 = Math.max(x0 - 8, 6); x1 = Math.min(x1 + 8, W - 6); y0 = Math.max(y0 - 8, 6); y1 = Math.min(y1 + 8, H - 6);
+  const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const seg = (a, b, p, over = 8) => pen.line([a, b], { p, w: .8, wob: .7, over });
+  const box = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+  const evs = [
+    ["c", "bounding box", tag(box.flatMap((a, i) => seg(a, box[(i + 1) % 4], .15)), 1)],
+    ["c", "centre lines", tag(seg([cx, y0], [cx, y1], .11).concat(seg([x0, cy], [x1, cy], .11)), 1)],
+  ];
+  const segs = [];
+  for (const p of coarse) {
+    const c = rdp(p.pts.filter((_, i) => i % 2 === 0), 9), total = len(p.pts) + 1e-9;
+    for (let i = 0; i + 1 < c.length; i++) {
+      const a = c[i], b = c[i + 1], L = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      if (L >= 16) segs.push({ pts: [a, [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], b], score: p.score * L / total, dark: p.dark });
+    }
+  }
+  for (const g of groupPaths(segs, 150, 70))
+    evs.push(["c", "construction line", tag(g.flatMap(q => seg(q.pts[0], q.pts[2], .13 + .07 * q.dark, 10)), 1)]);
+  return evs;
+}
+function eraseEvents(guideEvs, rng, sweeps = 18) {      // the same lines, scrubbed to and fro with an eraser, in a few sweeps
+  const lines = guideEvs.flatMap(e => e[2].map(s => s[3]));
+  if (!lines.length) return [];
+  const order = lines.map((_, i) => i);
+  for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(rng.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+  const n = Math.min(sweeps, lines.length), out = [];
+  for (let g = 0; g < n; g++) {
+    const a = Math.floor(g * order.length / n), b = Math.floor((g + 1) * order.length / n), st = [];
+    for (const li of order.slice(a, b)) {
+      const q = lines[li], m = q.length / 2, f = new Float32Array(q.length * 2), dx = rng.norm(0, 2.4), dy = rng.norm(0, 2.4);
+      f.set(q);
+      for (let i = 0; i < m; i++) { f[2 * (m + i)] = q[2 * (m - 1 - i)] + dx; f[2 * (m + i) + 1] = q[2 * (m - 1 - i) + 1] + dy; }
+      st.push([1, 4.5, 0, f, 2]);
+    }
+    out.push(["s", "erase construction lines", st]);
+  }
+  return out;
+}
+
 async function buildPlan(gray, seed, progress) {
   const tick = async (msg, f) => { progress(msg, f); await new Promise(r => setTimeout(r, 16)); };
   const rng = Rng(seed), pen = Pen(rng);
@@ -487,8 +544,7 @@ async function buildPlan(gray, seed, progress) {
 
   await tick("Blocking in the big shapes", .15);
   const coarse = contourPaths(gray, tone, 6, 70, 92, 30, 160, rng).paths.sort((a, b) => b.score - a.score).slice(0, 90);
-  const comp = groupPaths(coarse, 150, 70).map(g => ["c", "construction line",
-    g.flatMap(p => pen.line(p.pts.filter((_, i) => i % 3 === 0 || i === p.pts.length - 1), { p: .15 + .08 * p.dark, w: .9, wob: 1.4, over: 7 }))]);
+  const comp = constructionEvents(pen, rng, tone, coarse);
 
   await tick("Finding contours", .3);
   const med = contourPaths(gray, tone, 2.6, 72, 93, 14, 110, rng);
@@ -522,14 +578,10 @@ async function buildPlan(gray, seed, progress) {
   }
   const darkest = med.paths.concat(fine, ridges).sort((a, b) => (b.dark * 2 + b.score / 4000) - (a.dark * 2 + a.score / 4000)).slice(0, 40);
   for (const g of groupPaths(darkest, 90, 50)) accent.push(["f", "accent line", g.flatMap(p => pen.line(p.pts, { p: .82, w: 1.15, wob: .35 }))]);
-  for (let i = 0; i < Math.min(6, coarse.length); i++) {
-    const p = coarse[Math.floor(rng.random() * coarse.length)], dx = rng.norm(0, 1.5), dy = rng.norm(0, 1.5);
-    accent.push(["f", "restated construction", pen.line(p.pts.filter((_, j) => j % 3 === 0).map(q => [q[0] + dx, q[1] + dy]), { p: .2, wob: 1.6, over: 6 })]);
-  }
   for (let i = accent.length - 1; i > 0; i--) { const j = Math.floor(rng.random() * (i + 1)); [accent[i], accent[j]] = [accent[j], accent[i]]; }
 
   await tick("Fitting it into 720 minutes", .97);
-  const C = fit(comp, 40), L = fit(lines, 230), F = fit(accent, 50), S = fit(shade, N - C.length - L.length - F.length);
+  const C = fit(comp, 40), L = fit(lines, 230), F = fit(accent, 50), rub = eraseEvents(comp, rng), S = rub.concat(fit(shade, N - C.length - L.length - F.length - rub.length));
   const evs = [...C, ...L, ...S, ...F];
   while (evs.length < N) evs.push(["f", "pause", []]);
   return evs.slice(0, N);
@@ -553,6 +605,7 @@ function imageToGray(img, mode) {
    ===================================================================== */
 const mk = () => { const c = document.createElement("canvas"); c.width = CW; c.height = CH; return c; };
 const layer = mk(), lx = layer.getContext("2d");
+const gLayer = mk(), gx = gLayer.getContext("2d");   // construction lines, which the eraser can lift
 const blue = mk(), bx = blue.getContext("2d");
 const tmp = mk(), tx = tmp.getContext("2d");
 const view = $("cv"), vx = view.getContext("2d");
@@ -591,12 +644,17 @@ function pegs(ctx) {
 
 let k = 0, snaps = {};
 const SNAP = [180, 360, 540], GRAPHITE = "#2a2c31";
-function drawEvent(i) { for (const s of PLAN[i][2]) stroke(lx, s, GRAPHITE, 1); }
-function keepSnap(m) { if (SNAP.includes(m) && !snaps[m]) { const c = mk(); c.getContext("2d").drawImage(layer, 0, 0); snaps[m] = c; } }
+function put(s) {                                        // kind: 0 ink, 1 guide line, 2 eraser (lifts guides only)
+  if (s[4] === 2) { gx.globalCompositeOperation = "destination-out"; stroke(gx, s, "#000", 3.5); gx.globalCompositeOperation = "source-over"; }
+  else stroke(s[4] === 1 ? gx : lx, s, GRAPHITE, 1);
+}
+function drawEvent(i) { for (const s of PLAN[i][2]) put(s); }
+function keepSnap(m) { if (SNAP.includes(m) && !snaps[m]) { const c = mk(), g = mk(); c.getContext("2d").drawImage(layer, 0, 0); g.getContext("2d").drawImage(gLayer, 0, 0); snaps[m] = [c, g]; } }
 function rebuild(target) {
   if (PAINT) { k = target; return; }
   let start = 0; for (const m of SNAP) if (m <= target && snaps[m]) start = m;
-  lx.clearRect(0, 0, CW, CH); if (start) lx.drawImage(snaps[start], 0, 0);
+  lx.clearRect(0, 0, CW, CH); gx.clearRect(0, 0, CW, CH);
+  if (start) { lx.drawImage(snaps[start][0], 0, 0); gx.drawImage(snaps[start][1], 0, 0); }
   for (let i = start; i < target; i++) { drawEvent(i); keepSnap(i + 1); }
   k = target;
 }
@@ -621,7 +679,7 @@ function present() {
     return;
   }
   vx.globalCompositeOperation = "source-over"; vx.drawImage(paper, 0, 0);
-  tx.globalCompositeOperation = "source-over"; tx.clearRect(0, 0, CW, CH); tx.drawImage(layer, 0, 0);
+  tx.globalCompositeOperation = "source-over"; tx.clearRect(0, 0, CW, CH); tx.drawImage(layer, 0, 0); tx.drawImage(gLayer, 0, 0);
   tx.globalCompositeOperation = "destination-out"; tx.fillStyle = grain; tx.fillRect(0, 0, CW, CH);
   vx.globalCompositeOperation = "multiply"; vx.drawImage(tmp, 0, 0);
   vx.globalCompositeOperation = "source-over"; pegs(vx);
@@ -657,10 +715,10 @@ function drawMinute(m, dur, then) {
   const ss = PLAN[m - 1][2], t0 = performance.now(); let drawn = 0;
   label(m);
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const finish = () => { for (; drawn < ss.length; drawn++) stroke(lx, ss[drawn], GRAPHITE, 1); k = m; keepSnap(m); };
+  const finish = () => { for (; drawn < ss.length; drawn++) put(ss[drawn]); k = m; keepSnap(m); };
   const step = now => {
     const f = reduce ? 1 : Math.min(1, (now - t0) / dur), want = Math.ceil(f * ss.length);
-    for (; drawn < want; drawn++) stroke(lx, ss[drawn], GRAPHITE, 1);
+    for (; drawn < want; drawn++) put(ss[drawn]);
     highlight(m - 1, drawn); present();
     if (f < 1) anim.raf = requestAnimationFrame(step); else { finish(); anim = null; then && then(); }
   };
@@ -717,7 +775,7 @@ function markRow(m) {
 }
 function setPlan(plan, startAt) {
   pause(); if (anim) { cancelAnimationFrame(anim.raf); anim = null; }
-  PLAN = plan; snaps = {}; k = 0; lx.clearRect(0, 0, CW, CH);
+  PLAN = plan; snaps = {}; k = 0; lx.clearRect(0, 0, CW, CH); gx.clearRect(0, 0, CW, CH);
   buildMeta(); show(startAt);
 }
 

@@ -13,7 +13,7 @@ from PIL import Image, ImageOps
 
 from .constants import BAKE_VERSION, H, IMG_EXT, MAX_UPLOAD_PIXELS, TOTAL, UPLOAD_EXT, W
 from .export import viewer_plan
-from .media import new_sheet, plan
+from .media import DEFAULT_GAMMA, medium_name, new_sheet, plan
 from .planner import Look
 from .render import dither_1bit
 
@@ -58,7 +58,7 @@ class Library:
             self.data = json.loads(self.file.read_text())
         except Exception:
             self.data = {}
-        for k in ("images", "files", "days"):
+        for k in ("images", "files", "days", "looks"):
             self.data.setdefault(k, {})
 
     # ---- bookkeeping ----
@@ -119,9 +119,38 @@ class Library:
     def usable(self, h):
         return self.present(h) and h not in self.failed
 
+    def look_for(self, h) -> Look:
+        """How this picture is drawn: the display's setting unless it was given its own."""
+        o = self.data["looks"].get(h)
+        return Look(o["detail"], o["contrast"], o["medium"]) if o else self.look
+
+    def gamma_for(self, h) -> float:
+        """A picture given the other medium gets that medium's usual gamma."""
+        m = self.look_for(h).medium
+        return self.gamma if m == self.look.medium else DEFAULT_GAMMA[m]
+
+    def tune(self, h, medium=None, detail=None, contrast=None):
+        """Give a picture its own medium, detail or contrast (None keeps the current one).
+        Its frames are made again for the new look. Raises ValueError for bad values."""
+        cur = self.look_for(h)
+        medium = medium_name(medium) if medium else cur.medium
+        detail, contrast = float(detail or cur.detail), float(contrast or cur.contrast)
+        if not (0.5 <= detail <= 2 and 0.5 <= contrast <= 2):
+            raise ValueError("Detail and contrast must be between 0.5 and 2.")
+        new = Look(detail, contrast, medium)
+        if new == cur:
+            return
+        with self.lock:
+            if new == self.look:
+                self.data["looks"].pop(h, None)
+            else:
+                self.data["looks"][h] = {"detail": detail, "contrast": contrast, "medium": medium}
+            self.failed.discard(h)
+            self.save()
+
     def dir(self, h):
         w, hh = self.size
-        return self.plans / f"{h}-{self.fit}-{w}x{hh}-{'mono' if self.mono else 'gray'}-g{self.gamma:g}-s{self.seed(h)}{self.look.suffix}-{BAKE_VERSION}"
+        return self.plans / f"{h}-{self.fit}-{w}x{hh}-{'mono' if self.mono else 'gray'}-g{self.gamma_for(h):g}-s{self.seed(h)}{self.look_for(h).suffix}-{BAKE_VERSION}"
 
     def ready(self, h):
         return (self.dir(h) / "meta.json").exists()
@@ -170,20 +199,20 @@ class Library:
 
     def _bake(self, h, background):
         img = Path(self.data["images"][h]["path"])
-        out = self.dir(h)
+        out, look = self.dir(h), self.look_for(h)
         if background:
             import subprocess
             cmd = [sys.executable, str(Path(__file__).resolve().parent.parent / "a_day_in_lines.py"), "--image", str(img), "--fit", self.fit,
                    "--seed", str(self.seed(h)),
-                   "--detail", str(self.look.detail), "--contrast", str(self.look.contrast), "--medium", self.look.medium,
+                   "--detail", str(look.detail), "--contrast", str(look.contrast), "--medium", look.medium,
                    "bake", "--to", str(out),
-                   "--size", "x".join(map(str, self.size)), "--gamma", str(self.gamma)] + ([] if self.mono else ["--gray"])
+                   "--size", "x".join(map(str, self.size)), "--gamma", str(self.gamma_for(h))] + ([] if self.mono else ["--gray"])
             r = subprocess.run(cmd, preexec_fn=lambda: os.nice(15), capture_output=True, text=True)
             if r.returncode:
                 err = (r.stderr.strip().splitlines() or [f"exit code {r.returncode}"])[-1]
                 print(f"could not break down {img.name}: {err}", flush=True)
             return self.ready(h)
-        bake_image(img, self.seed(h), self.fit, out, self.size, self.gamma, self.mono, self.look)
+        bake_image(img, self.seed(h), self.fit, out, self.size, self.gamma_for(h), self.mono, look)
         return True
 
     def recent_picks(self):
@@ -257,7 +286,7 @@ class Library:
             self.save()
             return h
 
-    def add_upload(self, data: bytes, name: str) -> str:
+    def add_upload(self, data: bytes, name: str, by=None) -> str:
         import io
         try:
             with Image.open(io.BytesIO(data)) as im:
@@ -295,9 +324,46 @@ class Library:
             else:
                 self.data["images"][h] = {"path": key, "name": dest.stem,
                                           "added": dt.datetime.now().isoformat(timespec="seconds"), "drawn": []}
+                if by:
+                    self.data["images"][h]["by"] = by
             self.failed.discard(h)
             self.save()
         return h
+
+    def reroll(self, day: dt.date):
+        """Give `day` a different picture than the one it has (the least recently drawn of the
+        others). Returns the new hash, or None when there is no other to choose."""
+        with self.lock:
+            d, info = str(day), self.data["images"]
+            cur = self.data["days"].get(d)
+            cands = [h for h in info if self.usable(h) and h != cur and self.ready(h)]
+            if not cands:
+                return None
+            h = min(cands, key=lambda h: (bool(info[h]["drawn"]), max(info[h]["drawn"] or [""]), info[h]["added"]))
+            self.data["days"][d] = h
+            if d not in info[h]["drawn"]:
+                info[h]["drawn"] = (info[h]["drawn"] + [d])[-30:]
+            self.save()
+            return h
+
+    def delete(self, h):
+        """Remove a picture: its file, its history and its stored frames. Returns its name.
+        Raises KeyError if unknown."""
+        import shutil
+        with self.lock:
+            img = self.data["images"].pop(h)
+            Path(img["path"]).unlink(missing_ok=True)
+            for k in [k for k, v in self.data["files"].items() if v["hash"] == h]:
+                del self.data["files"][k]
+            for d in [d for d, v in self.data["days"].items() if v == h]:
+                del self.data["days"][d]
+            stored = list(self.plans.glob(f"{h}-*"))      # one per look it was ever made with
+            self.data["looks"].pop(h, None)
+            self.failed.discard(h)
+            self.save()
+        for d in stored:
+            shutil.rmtree(d, ignore_errors=True)
+        return img["name"]
 
     def watch(self, every: int, on_change=None, keep=10, protect=lambda: ()):
         """Background loop: notice new pictures and bake them, oldest first."""

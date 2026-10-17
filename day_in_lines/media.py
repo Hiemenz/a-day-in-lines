@@ -21,6 +21,16 @@ PHASE_NAMES = {                                    # the four phases, as each me
     "paint": {"composition": "blocking in", "linework": "underpainting", "shading": "building form",
               "finishing": "details & highlights"},
 }
+PHASE_STARTS = {                                   # the event each phase begins at (the four phases, in order)
+    "pencil": (0, 40, 270, 670),
+    "paint": (0, 80, 250, 530),
+}
+
+
+def phase_at(medium, first):
+    """The name of the phase that event `first` falls in."""
+    i = max(n for n, s in enumerate(PHASE_STARTS[medium]) if s <= first)
+    return list(PHASE_NAMES[medium].values())[i]
 
 
 def plan(image, seed, fit_mode="crop", look: Look = Look()):

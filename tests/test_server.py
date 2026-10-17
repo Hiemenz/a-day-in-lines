@@ -176,3 +176,10 @@ def test_the_page_knows_which_medium_is_live(tmp_path):
     finally:
         srv.shutdown()
         srv.server_close()
+
+
+def test_upload_can_start_part_way_through(server):
+    status, _ = upload(server, png(), query="&from=300")
+    assert status == 200
+    assert upload(server, png(color=50), query="&from=720")[0] == 400
+    assert upload(server, png(color=60), query="&from=abc")[0] == 400

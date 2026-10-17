@@ -10,7 +10,8 @@ from pathlib import Path
 from .constants import MAX_UPLOAD_BYTES, TOTAL
 from .export import fill_live, viewer_page
 from .library import Library
-from .schedule import Overrides, next_start
+from .schedule import Overrides
+from .submit import BadRequest, submit
 
 
 class Live:
@@ -65,7 +66,7 @@ def serve(live: Live, port: int, overrides: Overrides, start: dt.time, dur: dt.t
                                 start=live.started.strftime("%H:%M"), startMin=live.started.hour * 60 + live.started.minute,
                                 finish=live.finish.strftime("%H:%M"),
                                 perMin=(live.finish - live.started).total_seconds() / 60 / TOTAL,
-                                next=start.strftime("%H:%M"), needsKey=bool(upload_key), medium=lib.look.medium)
+                                next=start.strftime("%H:%M"), needsKey=bool(upload_key), medium=lib.look_for(live.hash).medium)
                     return self._send(200, fill_live(live.html[1], info), "text/html; charset=utf-8")
                 if path == "/state.json":
                     return self._send(200, json.dumps(dict(key=live.key, k=live.k)))
@@ -97,26 +98,13 @@ def serve(live: Live, port: int, overrides: Overrides, start: dt.time, dur: dt.t
                 return self._send(400, '{"error":"The upload was cut short."}')
             name = Path(unquote(self.headers.get("X-Filename", "upload.jpg"))).name or "upload.jpg"
             try:
-                h = lib.add_upload(data, name)
-            except ValueError as e:
+                r = submit(lib, overrides, start, dur, data, name, q.get("start", ["now"])[0], q.get("end", [""])[0],
+                           q.get("from", ["0"])[0])
+            except BadRequest as e:
                 return self._send(400, json.dumps({"error": str(e)}))
-            when, until = q.get("start", ["now"])[0], q.get("end", [""])[0]
-            now = dt.datetime.now().replace(second=0, microsecond=0)
-            try:
-                if when == "now":
-                    begin, fixed = now, True
-                elif when == "next":
-                    begin, fixed = next_start(now + dt.timedelta(minutes=1), start), False
-                else:                                  # a chosen time: the next time it comes round
-                    begin, fixed = next_start(now, dt.datetime.strptime(when, "%H:%M").time()), True
-                fin = (next_start(begin + dt.timedelta(minutes=1), dt.datetime.strptime(until, "%H:%M").time())
-                       if until else begin + dur)
-            except ValueError:
-                return self._send(400, '{"error":"Times must look like 14:30."}')
-            begin, fin = overrides.add(h, begin, fin, fixed)
             live.wake.set()
-            self._send(200, json.dumps({"ok": True, "start": begin.strftime("%a %H:%M"), "end": fin.strftime("%a %H:%M"),
-                                        "now": begin <= now}))
+            self._send(200, json.dumps({"ok": True, "start": r["begin"].strftime("%a %H:%M"),
+                                        "end": r["end"].strftime("%a %H:%M"), "now": r["now"]}))
 
     srv = ThreadingHTTPServer((bind, port), H)
     srv.daemon_threads = True
