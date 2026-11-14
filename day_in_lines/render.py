@@ -6,7 +6,7 @@ import functools
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-from .constants import H, PAPER_RGB, SS, W
+from .constants import GRAY4, H, PALETTE7, PAPER_RGB, SS, W
 from .pen import Pen, arc
 
 
@@ -160,3 +160,30 @@ def dither_1bit(gray: Image.Image, gamma=2.4) -> Image.Image:
     m = blue_noise()
     t = np.tile(m, (h // m.shape[0] + 1, w // m.shape[1] + 1))[:h, :w]
     return Image.fromarray(((g > t) * 255).astype(np.uint8), "L").convert("1")
+
+
+def dither_gray4(gray: Image.Image, gamma=2.4) -> Image.Image:
+    """Four greys for panels that have them, with the same local blue-noise dither between
+    neighbouring levels. Less darkening than 1-bit needs, since the greys carry the mid-tones."""
+    g = (np.asarray(gray, np.float32) / 255) ** (1 + (gamma - 1) / 2) * 3
+    h, w = g.shape
+    m = blue_noise()
+    t = np.tile(m, (h // m.shape[0] + 1, w // m.shape[1] + 1))[:h, :w]
+    level = np.clip(np.floor(g) + ((g - np.floor(g)) > t), 0, 3).astype(np.uint8)
+    return Image.fromarray(np.asarray(GRAY4, np.uint8)[level], "L")
+
+
+def quantize7(rgb: Image.Image) -> Image.Image:
+    """The seven colours of an ACeP panel, error-diffused. Stored as a palette image, so a
+    picture's frames stay small and the panel driver finds exactly its own colours."""
+    pal = Image.new("P", (1, 1))
+    pal.putpalette([c for col in PALETTE7 for c in col] + [0, 0, 0] * (256 - len(PALETTE7)))
+    return rgb.convert("RGB").quantize(palette=pal, dither=Image.FLOYDSTEINBERG)
+
+
+def frame_for(sheet, size, mode="mono", gamma=2.4) -> Image.Image:
+    """The stored frame for a sheet, in the panel's mode."""
+    if mode == "colour":                       # pencil has no colour: its greys, in the panel's black and white
+        return quantize7(sheet.paper(tuple(size)) if hasattr(sheet, "cover") else sheet.gray(tuple(size)))
+    g = sheet.gray(tuple(size))
+    return {"mono": lambda: dither_1bit(g, gamma), "gray4": lambda: dither_gray4(g, gamma)}.get(mode, lambda: g)()

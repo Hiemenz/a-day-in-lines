@@ -1,6 +1,6 @@
 # A Day in Lines
 
-An e-ink picture for the wall that draws itself. Give it any image, and over a day (12 hours by default, or whatever start and finish times you choose) a Raspberry Pi redraws it on the panel as a graphite pencil sketch, one stroke group at a time, 720 in all. Nothing is erased or redrawn, so anyone walking past sees a drawing in the middle of being made.
+An e-ink picture for the wall that draws itself. Give it any image, and over a day (12 hours by default, or whatever start and finish times you choose) a Raspberry Pi redraws it on the panel as a graphite pencil sketch, one stroke group at a time, 720 in all. Nothing is redrawn, and marks are only ever added, apart from the faint construction lines that are rubbed out during shading, so anyone walking past sees a drawing in the middle of being made.
 
 There are two paths, chosen with `--medium`: **drawing** (`--medium draw`, or `pencil`, the default) invents pencil marks for any image, as above, and **painting** (`--medium paint`) is for paintings. With `--medium paint`, give it a painting and it starts from a blank canvas and replays that painting stroke by stroke, big slabs of colour first, then smaller strokes, then details, ending on the picture you gave it. See [Painting instead of pencil](#painting-instead-of-pencil).
 
@@ -45,9 +45,9 @@ python3 a_day_in_lines.py --image ~/pictures run --display waveshare:epd7in5_V2 
 | Path | What it is |
 |---|---|
 | `a_day_in_lines.py` | Launcher: `python3 a_day_in_lines.py ...` runs everything below |
-| `day_in_lines/` | The program, one module per job: `planner` (pencil plan), `paint` (paint plan and renderer), `render` (graphite, dither), `library` (processing and storage), `schedule`, `server`, `submit` (queueing an upload), `slack_app`, `displays`, `export`, `cli` |
+| `day_in_lines/` | The program, one module per job: `planner` (pencil plan), `paint` (paint plan and renderer), `render` (graphite, dither), `library` (processing and storage), `schedule`, `server`, `submit` (queueing an upload), `slack_app`, `displays`, `feeds`, `export`, `cli` |
 | `tests/` | The pytest suite (`python3 -m pytest`) |
-| `viewer.html` | The viewer page the Pi serves. Keep it next to the program; the program fills in the live drawing |
+| `day_in_lines/viewer.html` | The viewer page the Pi serves; the program fills in the live drawing |
 | `web/standalone.html` | The same viewer as one offline page with a sample drawing built in. Open it in any browser to break down your own images; no Pi needed (rebuild it with `python web/build_standalone.py` after changing the viewer or planner) |
 | `examples/tanker.png` | Sample image |
 | `docs/` | The images in this README: final sheet, e-ink frame, hourly contact sheet, timelapse, and the same for paint |
@@ -55,6 +55,8 @@ python3 a_day_in_lines.py --image ~/pictures run --display waveshare:epd7in5_V2 
 | `requirements.txt` | numpy, scipy, Pillow, scikit-image |
 | `requirements-slack.txt` | slack_bolt, only for the Slack channel |
 | `requirements-dev.txt` | pytest, for the tests |
+| `pyproject.toml` | Lets you `pip install .` instead of running from the folder; then the command is `a-day-in-lines` (extras: `slack`, `heic`, `inky`, `dev`) |
+| `.github/workflows/tests.yml` | Runs the tests on every pull request |
 | `LICENSE` | MIT |
 
 ## How a picture becomes a day of drawing
@@ -147,11 +149,13 @@ Open `http://<pi-address>:8080/` on any device on your network.
 
 - **Live:** the page shows exactly the strokes on the display, at the current minute. New lines appear in blue as the display draws them. You can scrub back through the day, or tap any row of the exposure sheet to jump to that minute.
 - **Any image:** pick or drop an image to preview its breakdown, then tap **Send to display**.
+  - *More options:* where in the 720 events it starts (a phase, or an exact event), pencil or paint, detail, contrast, and a repeat (every day, weekdays, weekends, or one weekday). The fit you choose for the preview (fill the sheet, or the whole image) is sent with the picture. These apply to this one drawing unless you tick *always make this picture this way*.
   - *Start drawing now:* the panel clears and starts the new image straight away, replacing any other uploaded drawing on the sheet.
   - *Start at 07:00 tomorrow* (your `--start` time): waits for whatever is on the sheet to finish. Several uploads queue up and are drawn one after another; the page tells you when each one will start.
   - *Start at a time…:* pick a clock time; the drawing starts the next time it comes round and takes over the sheet then.
   - *Finish by* (optional): the time the drawing should be complete, e.g. start 18:00, finish by 22:00. Leave it empty for the same length as a normal day.
 - **When an upload hands back:** a finished upload stays up until the next start time, like any day's drawing. If it finishes early in a day's drawing time (an upload started in the evening finishing the next morning), the day's drawing takes over straight away, part-drawn, instead of leaving the panel idle for a day.
+- **The queue:** under the upload box the page lists what is on the display, what is waiting and what repeats, with pictures still being prepared and any that failed. Opened with the key, it also has **Pause**/**Resume**, **Skip**, **Restart**, and **Cancel** or **Stop repeating** on each entry.
 - **Who can upload:** only a viewer opened with the key, as `http://<pi-address>:8080/?key=...`. Watching needs no key. The first time it runs with `--serve`, the program makes a key, keeps it in `~/.cache/a-day-in-lines/upload_key` and prints the address with the key in the log (`journalctl -u day-in-lines`), so a bookmark keeps working across restarts. Choose your own with `--upload-key WORD`, or let anyone on the network upload with `--open-uploads`. Uploads are limited to 40 MB and 60 megapixels, must be real images, and are stored under safe names. To make the viewer reachable only from the Pi itself, use `--bind 127.0.0.1`.
 
 ## Sending pictures from Slack
@@ -178,19 +182,23 @@ For the service, put the two tokens in an environment file and add `EnvironmentF
 | `now` (default), `next`, `at 14:30` | when it begins: right away, at the next daily start, or at a clock time |
 | `finish by 22:00` | when it should be complete (default: the usual pace, so a late start finishes sooner) |
 | `every friday at 18:00`, `every weekday`, `every mon and thu`, `daily` | repeat it. Each occurrence goes on the schedule a day ahead, at the time given (or the daily start) |
-| `as paint`, `as pencil`, `detail 1.5`, `contrast 1.2` | make this picture differently from the display's setting. The picture keeps it, so it is made again once, and a painting uses the paint default gamma |
+| `as paint`, `as pencil`, `detail 1.5`, `contrast 1.2`, `fit pad`, `fit crop` | make this one drawing differently from the display's setting (`fit pad` keeps the whole image, with margins). The picture itself is unchanged, so its turn in the daily rotation looks as it always did. Add `always` to keep the look for the picture from now on |
+| `every 25 december`, `every dec 25 at 08:00`, `monthly on the 1st`, `every 3rd` | repeat it on a date each year or each month. A day a month doesn't have (the 31st) is skipped that month |
 
 A picture with no words gets two buttons: **Start now**, or **Choose when and where...**, a form with all of the choices above. After a start from part-way through, the bot posts the sheet as it will look at that spot.
 
 | Command | What it does |
 |---|---|
-| `browse` | The pictures the display has, newest first, five to a page, with a numbered contact sheet of them. Each has **Choose...** (the same form), **Preview spots** (the picture at 25%, 50%, 75% and 100%, to help pick a starting event) and **Delete...** (asks first; removes the file; refuses a picture that is on the display, queued or repeating) |
+| `browse` | The pictures the display has, newest first, five to a page, with a numbered contact sheet of them. Each has **Choose...** (the same form), **Preview spots** (the picture at 25%, 50%, 75% and 100%, to help pick a starting event) a button for its turn in the rotation (**Make favourite**: it comes round twice as often; **Take out of rotation**: it is drawn only when sent; **Back in rotation**) and **Delete...** (asks first; removes the file; refuses a picture that is on the display, queued or repeating) |
 | `queue` | What is drawing now, waiting, and repeating, each with **Cancel** or **Stop repeating**. Cancelling one occurrence of a repeat skips only that one |
 | `skip` | Drop the uploaded picture on the sheet; with none, give today a different picture, joining in progress |
 | `restart` | Draw what is on the display again from a blank sheet |
+| `pause`, `resume` | Hold the sheet as it is, then carry on from the same event. The drawing keeps its pace, so it finishes later by the length of the pause; anything that should have started meanwhile waits its turn |
 | `status`, `help` | What is on the display now; this list |
 
-The bot answers in a thread and says exactly when each picture will start and finish. It also posts in the channel when the display starts a new picture, moves into a new phase, or finishes. The web page's upload also takes `&from=300`.
+The bot answers in a thread and says exactly when each picture will start and finish. It also posts in the channel when the display starts a new picture, moves into a new phase, or finishes, and when a drawing completes it posts the whole day as a timelapse GIF (turn that off with `--no-slack-timelapse`). If a picture can't be broken down it says so, naming whoever sent it and the reason, and it speaks up when the display has been failing for five minutes and again when it recovers.
+
+**iPhone photos (HEIC):** `pip install pillow-heif` and they are read like any other picture, from Slack, the web page or the folder. Without it, a HEIC posted in Slack is taken from Slack's own JPEG copy (up to 1024 pixels wide, which is more than the panel shows).
 
 Everyone in the channel can look. To limit who can change the display, give their Slack member IDs with `--slack-users U01ABC,U02DEF`; the bot records who sent each picture and shows it in `browse` and `queue`. The `files:write` scope is also needed, for the contact sheets.
 
@@ -221,10 +229,10 @@ Global options go before the command: `python3 a_day_in_lines.py --image PATH [-
 | Command | What it does |
 |---|---|
 | `run` | Drive the display (see below) |
-| `bake` | Process an image, or every image in a folder, ahead of time (`--size`, `--gamma`, `--gray`, `--cache`) |
+| `bake` | Process an image, or every image in a folder, ahead of time (`--size`, `--gamma`, `--gray`, `--mode`, `--cache`) |
 | `plan` | Print the schedule with the time of every event (`--start HH:MM`, `--end HH:MM`) |
 | `breakdown` | Exposure sheet, offline viewer and optional per-event frames (`-o`, `--start`, `--end`, `--frames N`) |
-| `check` | Try the display with a test card (`--display`, `--out`, `--size`, `--gamma`); no `--image` needed |
+| `check` | Try the display with a test card (`--display`, `--out`, `--size`, `--gamma`, `--mode`, `--rotate`); no `--image` needed |
 | `frame K` | Render the sheet after K minutes (`-o file.png`, `--mono` for the 1-bit panel look, `--gamma`) |
 | `prompts` | Text-to-image prompts that scaffold a new picture in this picture's style (`--subject "..."`, `-o file`; see below) |
 | `preview` | Final sheet, e-ink frame, hourly contact sheet and timelapse GIF (`-o dir/`, `--every N`) |
@@ -233,7 +241,14 @@ Options for `run`:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--display` | `file` | `file` writes `--out` (default `current.png`); `waveshare:<module>` drives a panel, e.g. `waveshare:epd7in5_V2` |
+| `--display` | `file` | `file` writes `--out` (default `current.png`); `waveshare:<module>` drives a Waveshare panel, e.g. `waveshare:epd7in5_V2`; `inky:auto` drives a Pimoroni Inky |
+| `--mode` | `mono` | What the panel can show: `mono` (1-bit), `gray4` (four greys) or `colour` (seven colours). See Other panels |
+| `--rotate` | `0` | `180` for a panel mounted upside down; `90` or `270` for one on its side |
+| `--quiet HH:MM-HH:MM` | off | Quiet hours: no refreshes between these times (can cross midnight) |
+| `--caption TEXT` | off | A small label in the bottom right corner; `{name}`, `{date}`, `{day}` and `{time}` are filled in |
+| `--feed URL` | off | Fetch pictures from a feed, a list or an image address; can be repeated (`--feed-every MIN`, default 60; `--feed-max N`, default 5 new pictures a time) |
+| `--min-free MB` | `200` | Stop storing and processing pictures when the disk has less than this free; `0` turns the check off |
+| `--slack-timelapse / --no-slack-timelapse` | on | Post a timelapse GIF in the Slack channel when a drawing completes |
 | `--start` | `07:00` | When each day's drawing begins |
 | `--end` | 12 h after `--start` | When each day's drawing is finished; can cross midnight (e.g. `--start 22:00 --end 06:00`) |
 | `--serve PORT` | off | Serve the viewer and accept uploads |
@@ -261,6 +276,35 @@ python3 a_day_in_lines.py --image ~/paintings --medium paint prompts --subject "
 
 `prompts` reads the picture's tone (dark, mid or light), contrast, busyness and, if it has colour, its main hue, and writes four text-to-image prompts, one per drawing phase with its minute range: the loose composition lines, the linework, the shading, and the finished picture. They share one style line (pencil on animation paper, or palette-knife paint in colour; 5:3 landscape for the 800×480 panel), and each stage after the first asks for the same picture as the one before, so generating the four in order, each from the one before, scaffolds the new picture the way the display builds up its day. `--detail` and `--contrast` change the style line.
 
+## Quiet hours, pausing and captions
+
+- **Quiet hours:** `--quiet 22:00-07:00` stops the panel refreshing between those times, so a drawing that runs late doesn't flicker in a dark room. The drawing itself carries on (the web page and Slack show where it really is), and when quiet hours end the panel catches up with one full refresh.
+- **Pause and resume:** `pause` in Slack, or the **Pause** button on the web page, holds the sheet exactly as it is. **Resume** carries on from the same event at the same pace, so the drawing finishes later by the length of the pause. A day's drawing that was paused becomes an upload from that event; uploads that should have started during the pause queue behind it.
+- **Slower updates:** `--update-every 15` advances the panel only every 15 minutes (on the clock) instead of every minute. Use it with panels that blink on every refresh.
+- **A caption:** `--caption "{name}, {date}"` writes a small label in the bottom right corner of every frame, in a plain typeface. It is added when the frame is shown, so stored frames are not made again.
+- **The clocks changing:** progress is measured in real elapsed time, so when the clocks go back the drawing keeps going rather than undoing an hour of marks, and it still completes at the clock time promised.
+
+## Other panels
+
+- **Four greys:** `--mode gray4` stores four-grey frames and uses the driver's `init_4Gray` / `display_4Gray`, on Waveshare modules that have them (the program says so at start-up if yours doesn't). There is no partial refresh in this mode: every update is a full one, so add `--update-every`.
+- **Seven colours:** `--mode colour` stores frames in the seven ACeP colours for panels such as Waveshare's `epd5in65f` and `epd7in3f` or the Inky Impression. It is meant for `--medium paint`; pencil comes out black and white. These panels take around half a minute to refresh and flash while doing it, so use something like `--update-every 30`.
+- **Pimoroni Inky:** `pip install inky`, then `--display inky:auto`. The board is detected; black-and-white boards get 1-bit frames and the Impression gets colour (use `--mode colour`). Inky boards have no partial refresh either.
+- **Rotation:** `--rotate 180` for a panel mounted upside down. `--rotate 90` or `270` is for drivers whose own orientation is upright. The sheet is always drawn 5:3 landscape, so on a panel that really hangs upright it is stretched to fit rather than recomposed.
+
+The grey, colour and Inky paths are covered by tests against stand-in drivers, but have not been run on those panels; try `check --display ... --mode ...` first.
+
+## Pictures that arrive by themselves
+
+- **Feeds:** `--feed URL` looks at an address every hour (`--feed-every`) and saves pictures it hasn't seen into the picture folder, where they join the rotation. The address can be an RSS or Atom feed (image enclosures, `media:content`, and images in the item text), a plain text file with one image address a line, or the address of a picture that changes (a picture of the day). At most five new pictures are taken from a feed each time (`--feed-max`), so a long feed joins gradually. Shared albums from iCloud or Google Photos have no feed to read and are not supported.
+- **From the iPhone share sheet:** make a Shortcut that accepts images from the share sheet, with one action, *Get Contents of URL*: URL `http://<pi-address>:8080/upload?key=<your key>&start=now`, method POST, request body *File*, the Shortcut Input. Sharing a photo to it sends it to the display. The same address works from any script: `curl --data-binary @photo.jpg "http://<pi-address>:8080/upload?key=<key>&start=next"`.
+- **Upload options in the address:** `start` (`now`, `next` or `HH:MM`), `end` (`HH:MM`), `from` (0 to 719), `medium`, `detail`, `contrast`, `fit` (for this drawing; add `always=1` to keep them for the picture), and `every` (`daily`, `weekdays`, `weekends`, weekday numbers like `0,4` with Monday as 0, `day-1` for the 1st of each month, or `12-25` for a date each year).
+
+## Status and health
+
+- `GET /status.json`: what is on the display, whether it is paused or in quiet hours, the queue, the repeats, pictures being prepared and pictures that failed. No key needed.
+- `GET /health`: 200 while the display loop is working; 503 once it has been failing, or silent, for five minutes, with the last error. Point an uptime checker at it.
+- `POST /pause`, `/resume`, `/skip`, `/restart`, `/cancel?id=...`, `/stop_repeat?id=...`: the same actions as the Slack commands. They need the key, like uploads.
+- **Disk:** when less than `--min-free` MB is left (200 by default), uploads are refused with a message and pictures are not processed until there is room; they are not marked as bad.
 ## Run at boot
 
 ```bash
@@ -304,6 +348,7 @@ By default a panel with partial refresh gets one a minute (720 a day) and a full
 
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
+pip install -e ".[dev]"     # or: pip install -r requirements.txt -r requirements-dev.txt
 python3 -m pytest          # about two minutes; the schedule and server tests take seconds
 ```
 

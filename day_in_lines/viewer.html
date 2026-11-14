@@ -63,6 +63,19 @@ button:focus-visible, select:focus-visible, input:focus-visible, .row:focus-visi
 #sendbar .fin { display: inline-flex; align-items: center; gap: 6px; color: var(--muted) }
 .live { color: var(--blue); font-weight: 500 }
 #file { position: absolute; width: 1px; height: 1px; opacity: 0 }
+#more { flex: 1 1 100%; font-size: 13px; color: var(--muted) }
+#more summary { cursor: pointer }
+#more .opts { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-top: 10px }
+#more label { display: inline-flex; align-items: center; gap: 6px }
+#more input[type=number] { width: 5.5em }
+.queue { padding: 12px 14px; border: 1px solid var(--rule); border-radius: 8px; background: var(--desk-2); font-size: 13px; display: grid; gap: 8px }
+.queue[hidden] { display: none }
+.queue .qhead { display: flex; flex-wrap: wrap; gap: 8px; align-items: center }
+.queue .qhead strong { font: 700 13px var(--display); letter-spacing: .08em; text-transform: uppercase; margin-right: auto }
+.queue .qrow { display: flex; gap: 10px; align-items: baseline; justify-content: space-between; border-top: 1px solid var(--rule); padding-top: 8px }
+.queue .qrow span { min-width: 0; overflow-wrap: anywhere }
+.queue .qnote { color: var(--muted) }
+.queue button { font-size: 12px; padding: 3px 9px }
 .busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(246,242,231,.82); color: #2a2c31; font: 500 14px var(--mono); text-align: center; padding: 16px }
 .busy span { display: block; margin-top: 6px; color: #6b6f78; font-weight: 400; font-size: 12px }
 
@@ -121,8 +134,35 @@ aside h2 small { font: 400 11px var(--mono); color: var(--muted); letter-spacing
         <input type="time" id="at" aria-label="Start at this time" hidden>
         <label class="fin">Finish by <input type="time" id="finish" aria-label="Finish by this time (optional)"></label>
         <button id="send">Send to display</button>
+        <details id="more">
+          <summary>More options: where it starts, how it is made, repeats</summary>
+          <div class="opts">
+            <label>Start from <select id="spot" aria-label="Where in the 720 events it starts"></select></label>
+            <label>event <input type="number" id="from" min="0" max="719" step="1" value="0" aria-label="Exact event to start from, 0 to 719"></label>
+            <label>Make it as <select id="medium" aria-label="Pencil or paint">
+              <option value="">the display's usual</option><option value="pencil">a pencil drawing</option><option value="paint">a painting</option>
+            </select></label>
+            <label>Detail <input type="number" id="detail" min="0.5" max="2" step="0.1" placeholder="1"></label>
+            <label>Contrast <input type="number" id="contrast" min="0.5" max="2" step="0.1" placeholder="1"></label>
+            <label>Repeat <select id="repeat" aria-label="Repeat this picture">
+              <option value="">no</option><option value="daily">every day</option><option value="weekdays">every weekday</option>
+              <option value="weekends">every weekend</option><option value="0">every Monday</option><option value="1">every Tuesday</option>
+              <option value="2">every Wednesday</option><option value="3">every Thursday</option><option value="4">every Friday</option>
+              <option value="5">every Saturday</option><option value="6">every Sunday</option>
+            </select></label>
+            <label><input type="checkbox" id="always"> always make this picture this way</label>
+          </div>
+        </details>
       </span>
       <p id="srcnote">Showing the sample tanker sketch. Pick or drop any photo or drawing and it is broken into 720 minutes of lines here, in your browser.</p>
+    </div>
+
+    <div class="queue" id="queue" hidden>
+      <div class="qhead"><strong>On the display</strong>
+        <button id="qpause" hidden>Pause</button><button id="qskip" hidden>Skip</button><button id="qrestart" hidden>Restart</button>
+      </div>
+      <div class="qnote" id="qstate" aria-live="polite"></div>
+      <div id="qlist"></div>
     </div>
 
     <div class="now" aria-live="polite">
@@ -868,12 +908,18 @@ if (!LIVE) {
       const key = new URLSearchParams(location.search).get("key") || "";
       const when = $("when").value === "at" ? $("at").value : $("when").value;
       if (!when) throw new Error("choose a start time");
-      const r = await fetch("upload?start=" + encodeURIComponent(when) + "&end=" + encodeURIComponent($("finish").value)
-        + "&key=" + encodeURIComponent(key), { method: "POST", body: lastFile,
+      const q = new URLSearchParams({ start: when, end: $("finish").value, key, fit: $("fit").value, from: $("from").value || "0" });
+      for (const id of ["medium", "detail", "contrast"]) if ($(id).value) q.set(id, $(id).value);
+      if ($("repeat").value) q.set("every", $("repeat").value);
+      if ($("always").checked) q.set("always", "1");
+      const r = await fetch("upload?" + q, { method: "POST", body: lastFile,
         headers: { "X-Filename": encodeURIComponent(lastFile.name) } });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error || r.statusText);
-      $("srcnote").textContent = j.now ? `Sent. The display is starting ${lastName} on a blank sheet now, finishing ${j.end}; this page will switch over when it does.`
+      refreshStatus();
+      $("srcnote").textContent = j.repeat ? `Sent. ${lastName} will repeat; the next time is ${j.start}.`
+        : j.paused ? `Sent. ${lastName} is queued, but the display is paused; press Resume to carry on.`
+        : j.now ? `Sent. The display is starting ${lastName} on a blank sheet now, finishing ${j.end}; this page will switch over when it does.`
         : `Sent. The display starts ${lastName} at ${j.start} and finishes it by ${j.end}.`;
       $("sendbar").hidden = true;
       if (j.now) { const w = setInterval(poll, 3000); setTimeout(() => clearInterval(w), 120000); }
@@ -881,5 +927,56 @@ if (!LIVE) {
       $("srcnote").textContent = `The display didn't accept it: ${e.message}`;
     } finally { $("send").disabled = false; }
   };
+
+  // ---- more options: where it starts and how it is made ----
+  $("fit").value = LIVE.fit || "crop";
+  const starts = PAINT ? [[0, "the beginning"], [80, "underpainting"], [250, "building form"], [530, "details"]]
+    : [[0, "the beginning"], [40, "linework"], [270, "shading"], [670, "finishing"]];
+  for (const [v, t] of starts) $("spot").add(new Option(v ? `${t} (event ${v})` : t, v));
+  $("spot").onchange = () => { $("from").value = $("spot").value; };
+
+  // ---- the queue: what is waiting, and the buttons the Slack channel has ----
+  const KEY = new URLSearchParams(location.search).get("key") || "";
+  const canChange = !LIVE.needsKey || !!KEY;
+  const el = (tag, text, cls) => { const e = document.createElement(tag); if (text) e.textContent = text; if (cls) e.className = cls; return e; };
+  const at = iso => iso ? `${new Date(iso.slice(0, 10) + "T12:00").toLocaleDateString(undefined, { weekday: "short" })} ${iso.slice(11, 16)}` : "";
+  const look = st => st ? " (" + Object.entries(st).map(([a, b]) => a === "medium" ? `as ${b}` : `${a} ${b}`).join(", ") + ")" : "";
+  async function act(path, id) {
+    try {
+      const r = await fetch(path + "?" + new URLSearchParams(id ? { key: KEY, id } : { key: KEY }), { method: "POST" });
+      const j = await r.json();
+      $("qstate").textContent = r.ok ? j.text : `That didn't work: ${j.error || r.statusText}`;
+    } catch (e) { $("qstate").textContent = "The display didn't answer; try again."; }
+    $("qstate").dataset.said = "1"; setTimeout(() => { delete $("qstate").dataset.said; refreshStatus(); }, 8000);
+    setTimeout(refreshStatus, 400); setTimeout(poll, 2500);
+  }
+  let paused = false;
+  $("qpause").onclick = () => act(paused ? "resume" : "pause");
+  $("qskip").onclick = () => act("skip");
+  $("qrestart").onclick = () => { if (confirm("Start what is on the display again from a blank sheet?")) act("restart"); };
+  async function refreshStatus() {
+    let s;
+    try { s = await (await fetch("status.json", { cache: "no-store" })).json(); } catch (e) { return; }
+    $("queue").hidden = false; paused = s.paused;
+    for (const id of ["qpause", "qskip", "qrestart"]) $(id).hidden = !canChange;
+    $("qpause").textContent = s.paused ? "Resume" : "Pause";
+    const bits = [`${s.image}: event ${s.k} of ${s.total}` + (s.paused ? ", paused" : s.finish ? `, complete ${at(s.finish)}` : "")];
+    if (s.quiet) bits.push("quiet hours: the panel is holding its last frame");
+    if (s.error) bits.push(`the display reports a problem: ${s.error}`);
+    if (!$("qstate").dataset.said) $("qstate").textContent = bits.join("; ") + ".";
+    const list = $("qlist"); list.replaceChildren();
+    const row = (text, label, fn) => {
+      const r = el("div", "", "qrow"); r.append(el("span", text));
+      if (label && canChange) { const b = el("button", label); b.onclick = fn; r.append(b); }
+      list.append(r);
+    };
+    for (const e of s.queue) row(`${e.name}${e.first ? ` from event ${e.first}` : ""}${look(e.style)}: ` + (e.drawing ? `on the display now, complete ${at(e.end)}` : `starts ${at(e.start)}, complete ${at(e.end)}`),
+      "Cancel", () => act("cancel", e.id));
+    for (const r of s.repeats) row(`${r.name}${look(r.style)}: ${r.when} at ${r.time}${r.until ? `, finishing by ${r.until}` : ""}`, "Stop repeating", () => act("stop_repeat", r.id));
+    if (s.preparing.length) row(`Being prepared: ${s.preparing.join(", ")}`);
+    for (const f of s.failed) row(`Could not be broken down: ${f.name} (${f.why})`);
+    if (!s.queue.length && !s.repeats.length) row(`Nothing queued. The daily drawing starts at ${LIVE.next}.`);
+  }
+  refreshStatus(); setInterval(refreshStatus, 15000);
 }
 </script>
