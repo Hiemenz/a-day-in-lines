@@ -25,9 +25,24 @@ def window(start: dt.time, end: dt.time | None) -> dt.timedelta:
 
 def progress(now: dt.datetime, began: dt.datetime, dur: dt.timedelta) -> int:
     """Events on the sheet: the 720 are spread evenly from `began` over `dur`."""
-    if now <= began:
+    return progress_to(now, began, began + dur)
+
+
+def _us(a: dt.datetime, b: dt.datetime) -> int:
+    """Real microseconds from a to b. These are local wall-clock times, so across a clock change
+    the plain difference is an hour out; going through the timestamp is not."""
+    return round((b.timestamp() - a.timestamp()) * 1e6)
+
+
+def progress_to(now: dt.datetime, began: dt.datetime, fin: dt.datetime) -> int:
+    """Events on the sheet when the 720 are spread from `began` to `fin`, in real elapsed time:
+    when the clocks go back the drawing carries on rather than losing an hour's marks."""
+    done, total = _us(began, now), _us(began, fin)
+    if done <= 0:
         return 0
-    return min(TOTAL, int((now - began) / dur * TOTAL))
+    if total <= 0:
+        return TOTAL
+    return min(TOTAL, (done + 1) * TOTAL // total)
 
 
 def snap(now: dt.datetime, minutes: int) -> dt.datetime:
@@ -70,8 +85,61 @@ class Overrides:
 
     def __init__(self, cache: Path, start: dt.time, dur: dt.timedelta):
         self.file, self.start, self.dur = cache / "override.json", start, dur
+        self.pause_file = cache / "pause.json"
         self.lock = threading.Lock()
         self.repeats = Repeats(self, cache / "repeats.json")
+
+    # ---- pausing: the clock the schedule sees stops, and the sheet holds ----
+    def paused(self) -> dt.datetime | None:
+        """When the display was paused, or None if it is running."""
+        try:
+            return dt.datetime.fromisoformat(json.loads(self.pause_file.read_text())["since"])
+        except FileNotFoundError:
+            return None
+        except Exception:
+            self.pause_file.unlink(missing_ok=True)
+            return None
+
+    def clock(self, now: dt.datetime) -> dt.datetime:
+        """The time the schedule goes by: `now`, or the moment of the pause."""
+        return self.paused() or now
+
+    def pause(self, now: dt.datetime) -> bool:
+        if self.paused():
+            return False
+        self.pause_file.write_text(json.dumps({"since": now.isoformat()}))
+        return True
+
+    def resume(self, now: dt.datetime, lib: Library) -> bool:
+        """Carry on from where the sheet stopped. The drawing on it keeps its pace and so
+        finishes later by the length of the pause; a day's drawing becomes an upload that starts
+        now from the event it had reached. Anything that should have started during the pause
+        waits its turn behind it."""
+        since = self.paused()
+        if not since:
+            return False
+        active = self.current_entry(since, lib)              # also drops what had finished by then
+        with self.lock:
+            ovs = self._load()
+            held = None
+            if active:
+                held = next((o for o in ovs if self.entry_id(o) == self.entry_id(active[0])), None)
+                if held:
+                    self._move(held, self._t(held, "start") + (now - since))
+            else:
+                day, k = drawing_day(since, self.start, self.dur)
+                h = lib.pick(day)
+                if h is not None and k < TOTAL:
+                    left = dt.datetime.combine(day, self.start) + self.dur - since
+                    held = {"hash": h, "start": now.isoformat(), "end": (now + left).isoformat(), "fixed": True, "first": k}
+                    ovs.append(held)
+            for o in ovs:                                    # missed their start: queue up rather than cut in
+                if o is not held and since <= self._t(o, "start") < now:
+                    o["fixed"] = False
+                    self._move(o, now)
+            self.pause_file.unlink(missing_ok=True)
+            self._save(self._chain(ovs))
+        return True
 
     def _load(self):
         try:
@@ -147,6 +215,7 @@ class Overrides:
     def entries(self, now: dt.datetime, lib: Library):
         """Everything waiting for or holding the sheet, soonest first, each with an `id` and
         `drawing` (is it on the sheet now)."""
+        now = self.clock(now)
         self.current(now, lib)                       # drops finished and cut-short ones first
         with self.lock:
             ovs = self._load()
@@ -172,9 +241,21 @@ class Overrides:
         with self.lock:
             return {o["hash"] for o in self._load()}
 
+    def variants(self):
+        """(hash, style) for queued drawings and repeats that were given their own look."""
+        with self.lock:
+            ovs = self._load()
+        return [(o["hash"], o["style"]) for o in ovs + self.repeats.all() if o.get("style")]
+
     def current(self, now: dt.datetime, lib: Library):
         """The upload on the sheet now, as (hash, start, end), or None. Drops finished
         ones, and ones a later fixed upload has cut short."""
+        cur = self.current_entry(now, lib)
+        return cur and (cur[0]["hash"], cur[1], cur[2])
+
+    def current_entry(self, now: dt.datetime, lib: Library):
+        """As `current`, with the whole entry: (entry, start, end), or None."""
+        now = self.clock(now)
         self.repeats.apply(now, lib)
         with self.lock:
             ovs = self._load()
@@ -189,7 +270,7 @@ class Overrides:
             began, fin = self._t(active, "start"), self._t(active, "end")
             first = min(max(int(active.get("first", 0)), 0), TOTAL - 1)
             # Seen from the viewer's side the drawing began earlier, so `progress` gives `first` at `began`
-            return active["hash"], began - (fin - began) * first / (TOTAL - first), fin
+            return active, began - (fin - began) * first / (TOTAL - first), fin
         return None
 
 
@@ -198,8 +279,9 @@ DAYS = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sun
 
 class Repeats:
     """Pictures that come round again: cache/repeats.json, a list of {"id", "hash", "days"
-    (0 = Monday), "time", "until", "first", "by", "skip"}. Each occurrence is put on the
-    upload schedule as a fixed upload a day before it is due."""
+    (0 = Monday), "time", "until", "first", "by", "skip"}, plus "on" for a date instead of
+    weekdays ({"day": 1} monthly, {"month": 12, "day": 25} yearly) and "style" for a look of
+    its own. Each occurrence is put on the upload schedule as a fixed upload a day before it is due."""
 
     AHEAD = dt.timedelta(days=1)
 
@@ -225,15 +307,24 @@ class Repeats:
         tmp.write_text(json.dumps(rs))
         tmp.replace(self.file)
 
-    def add(self, h, days, at: str, until="", first=0, by=None):
-        """Repeat a picture on these weekdays at this time ("HH:MM"). Returns the repeat's id."""
+    def add(self, h, days, at: str, until="", first=0, by=None, on=None, style=None):
+        """Repeat a picture on these weekdays (or, with `on`, that date each month or year) at
+        this time ("HH:MM"). Returns the repeat's id."""
         dt.datetime.strptime(at, "%H:%M")
+        if on:
+            on = {k: int(on[k]) for k in ("month", "day") if on.get(k)}
+            dt.date(2024, on.get("month", 1), on["day"])            # a real date (2024 has a 29 February)
+            days = []
         with self.lock:
             rs = self._load()
             r = {"id": f"{h}-{len(rs)}-{int(dt.datetime.now().timestamp())}", "hash": h, "days": sorted(set(days)),
                  "time": at, "until": until, "first": first}
             if by:
                 r["by"] = by
+            if on:
+                r["on"] = on
+            if style:
+                r["style"] = style
             self._save(rs + [r])
             return r["id"]
 
@@ -260,9 +351,12 @@ class Repeats:
     @staticmethod
     def next_time(r, now: dt.datetime) -> dt.datetime:
         t = dt.datetime.strptime(r["time"], "%H:%M").time()
-        for i in range(8):
+        on = r.get("on")
+        for i in range(366 * 8 + 3 if on else 8):            # 29 February can be eight years off
             c = dt.datetime.combine(now.date() + dt.timedelta(days=i), t)
-            if c >= now and c.weekday() in r["days"]:
+            if c < now:
+                continue
+            if (c.day == on["day"] and on.get("month", c.month) == c.month) if on else c.weekday() in r.get("days", ()):
                 return c
         return dt.datetime.combine(now.date() + dt.timedelta(days=7), t)
 
@@ -276,24 +370,38 @@ class Repeats:
         for r in rs:
             if not lib.usable(r["hash"]):
                 continue
+            if not r.get("on") and not r.get("days"):
+                continue
             occ = self.next_time(r, now)
             if occ - now > self.AHEAD or occ.isoformat() == r.get("skip") or (r["hash"], occ.isoformat()) in have:
                 continue
             first = r.get("first", 0)
             fin = (next_start(occ + dt.timedelta(minutes=1), dt.datetime.strptime(r["until"], "%H:%M").time())
                    if r.get("until") else occ + self.ov.dur * (TOTAL - first) / TOTAL)
-            self.ov.add(r["hash"], occ, fin, True, first, repeat=r["id"], by=r.get("by"))
+            self.ov.add(r["hash"], occ, fin, True, first, repeat=r["id"], by=r.get("by"), style=r.get("style"))
+
+
+def schedule_full(now, start, dur, overrides: Overrides, lib: Library) -> dict:
+    """What should be on the sheet now: key, hash, k, began, fin, style (the look this one
+    drawing was given, or None) and paused. With no pictures, key and hash are None."""
+    since = overrides.paused()
+    now = since or now
+    cur = overrides.current_entry(now, lib)
+    if cur:
+        e, began, fin = cur
+        h, style = e["hash"], e.get("style") or None
+        tag = "".join(f":{k}={style[k]}" for k in sorted(style)) if style else ""
+        return dict(key=f"upload:{began.isoformat()}:{h}{tag}", hash=h, k=progress_to(now, began, fin), began=began, fin=fin,
+                    style=style, paused=bool(since))
+    day, k = drawing_day(now, start, dur)
+    h = lib.pick(day)
+    if h is None:
+        return dict(key=None, hash=None, k=0, began=None, fin=None, style=None, paused=bool(since))
+    began = dt.datetime.combine(day, start)
+    return dict(key=f"day:{day}:{h}", hash=h, k=k, began=began, fin=began + dur, style=None, paused=bool(since))
 
 
 def schedule(now, start, dur, overrides: Overrides, lib: Library):
     """What should be on the sheet now: (key, image hash, k, start datetime, end datetime)."""
-    cur = overrides.current(now, lib)
-    if cur:
-        h, began, fin = cur
-        return f"upload:{began.isoformat()}:{h}", h, progress(now, began, fin - began), began, fin
-    day, k = drawing_day(now, start, dur)
-    h = lib.pick(day)
-    if h is None:
-        return None, None, 0, None, None
-    began = dt.datetime.combine(day, start)
-    return f"day:{day}:{h}", h, k, began, began + dur
+    s = schedule_full(now, start, dur, overrides, lib)
+    return s["key"], s["hash"], s["k"], s["began"], s["fin"]

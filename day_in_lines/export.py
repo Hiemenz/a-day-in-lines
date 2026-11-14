@@ -34,7 +34,7 @@ def script_json(text: str) -> str:
 
 def viewer_page(plan_json: str) -> str:
     """The viewer with a plan in it; the live slot is left for fill_live."""
-    tpl = (Path(__file__).resolve().parent.parent / "viewer.html").read_text()
+    tpl = (Path(__file__).resolve().parent / "viewer.html").read_text()
     tpl = ('<!doctype html><html lang="en"><head><meta charset="utf-8">'
            '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
            '<style>body{margin:0}[hidden]{display:none!important}</style></head><body>' + tpl + '</body></html>')
@@ -86,3 +86,19 @@ def breakdown(image, seed, fit_mode, outdir: Path, start: dt.time, frames_every:
     total = sum(len(e["strokes"]) for e in events)
     print(f"{image.name}: {total} strokes in {TOTAL} minutes -> {outdir}")
     return events
+
+
+def timelapse_gif(frames, size=(W // 2, H // 2), ms=60, hold=40) -> bytes | None:
+    """A GIF of stored frames (paths, in order), holding on the last. None if none exist."""
+    import io
+    ims = []
+    for f in frames:
+        if Path(f).is_file():
+            with Image.open(f) as im:
+                ims.append(im.convert("RGB").resize(size, Image.LANCZOS).convert("P", palette=Image.ADAPTIVE, colors=32))
+    if not ims:
+        return None
+    ims += [ims[-1]] * hold
+    buf = io.BytesIO()
+    ims[0].save(buf, "GIF", save_all=True, append_images=ims[1:], duration=ms, loop=0)
+    return buf.getvalue()

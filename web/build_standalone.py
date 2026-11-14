@@ -1,6 +1,6 @@
-"""Rebuild web/standalone.html from viewer.html, with a sample drawing planned from examples/tanker.png.
+"""Rebuild web/standalone.html from day_in_lines/viewer.html, with a sample drawing planned from examples/tanker.png.
 
-Run it after changing viewer.html or the planner:  python web/build_standalone.py"""
+Run it after changing day_in_lines/viewer.html or the planner:  python web/build_standalone.py"""
 import sys
 from pathlib import Path
 

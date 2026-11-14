@@ -53,7 +53,8 @@ def test_phase_names_follow_the_medium():
 
 def test_unknown_spot_is_refused():
     with pytest.raises(BadRequest):
-        parse_options("from banana")
+        parse_options("from shadng")                 # near a phase name: a typo, so say so
+    assert parse_options("from banana").given is False   # anything else is just a caption
 
 
 def test_starting_spot_is_on_the_sheet_when_it_starts(desk):
@@ -101,7 +102,7 @@ def test_form_values_become_options():
 def test_modal_is_well_formed():
     m = setup_modal("paint", {"file": "F1", "thread": "1.2"})
     assert [b["block_id"] for b in m["blocks"]] == ["when", "at", "until", "phase", "event", "repeat", "medium",
-                                                     "detail", "contrast"]
+                                                     "fit", "always", "detail", "contrast"]
 
 
 def test_browse_pages_through_the_library(desk):
@@ -119,7 +120,7 @@ def test_browse_blocks_and_choosing_a_known_picture(desk):
     assert "No pictures" in browse_blocks(desk, 0)[0]["text"]["text"]
     h = desk.lib.add_upload(_png(5), "mine.png")
     blocks = browse_blocks(desk, 0)
-    assert [e["action_id"] for e in blocks[2]["elements"]] == ["pick", "preview", "delete"]
+    assert [e["action_id"] for e in blocks[2]["elements"]] == ["pick", "preview", "weight", "delete"]
     assert blocks[2]["elements"][0]["value"] == h
     now = D(2026, 3, 10, 12, 0)
     reply = desk.add_known(h, Options(first=100), now=now)
@@ -161,11 +162,11 @@ def test_options_for_repeats_and_tuning():
 def test_picture_given_its_own_look_is_made_again_for_it(desk):
     h = desk.lib.add_upload(_png(1), "a.png")
     before = desk.lib.dir(h)
-    desk.add_known(h, Options(medium="paint", detail=1.5), now=D(2026, 3, 10, 12))
+    desk.add_known(h, Options(medium="paint", detail=1.5, always=True), now=D(2026, 3, 10, 12))
     assert desk.lib.look_for(h).medium == "paint" and desk.lib.look_for(h).detail == 1.5
     assert desk.lib.dir(h) != before and desk.medium_of(h) == "paint"
     assert desk.lib.gamma_for(h) == 1.6                           # paint's usual, not pencil's
-    desk.add_known(h, Options(medium="pencil", detail=1.0))
+    desk.add_known(h, Options(medium="pencil", detail=1.0, always=True))
     assert desk.lib.dir(h) == before and h not in desk.lib.data["looks"]
     with pytest.raises(BadRequest):
         desk.add_known(h, Options(detail=9))
@@ -334,8 +335,9 @@ def bot(desk, monkeypatch):
     monkeypatch.setitem(sys.modules, "slack_bolt.adapter.socket_mode",
                         types.SimpleNamespace(SocketModeHandler=lambda app, tok: mock.MagicMock()))
     monkeypatch.setattr(slack_app, "download", lambda url, tok: _png(4))
-    slack_app.start_slack(desk, "xoxb", "xapp", "C1")
+    handler = slack_app.start_slack(desk, "xoxb", "xapp", "C1")
     app = holder["app"]
+    app.handler = handler
     app.desk = desk
     app.say = lambda: [c.kwargs for c in app.client.chat_postMessage.call_args_list]
     return app
@@ -419,3 +421,58 @@ def test_delete_asks_first(bot):
 def test_plural_day_names():
     assert parse_options("every fridays at 18:00").every == [4]
     assert parse_options("every tuesdays and thursdays").every == [1, 3]
+
+
+def test_pause_resume_and_a_pictures_turn_from_the_channel(bot):
+    h = bot.handlers["event", "message"]
+    h(message("pause"))
+    assert "Paused" in bot.say()[-1]["text"] and bot.desk.overrides.paused()
+    h(message("queue"))
+    assert "paused" in bot.say()[-1]["blocks"][0]["text"]["text"]
+    h(message("resume"))
+    assert "Resumed" in bot.say()[-1]["text"] and not bot.desk.overrides.paused()
+    pic = bot.desk.lib.add_upload(_png(8), "mine.png")
+    body = {"channel": {"id": "C1"}, "user": {"id": "U1"}, "message": {"ts": "1.0"}, "actions": [{"value": pic}]}
+    bot.handlers["action", "weight"](lambda: None, body)
+    assert "favourite" in bot.say()[-1]["text"] and bot.desk.lib.weight(pic) == "favourite"
+
+
+def test_a_look_in_the_message_is_for_that_drawing_unless_always(bot):
+    h = bot.handlers["event", "message"]
+    h(message("as paint next", [PIC], subtype="file_share"))
+    lib = bot.desk.lib
+    (pic,) = lib.data["images"]
+    assert "as paint" in bot.say()[-1]["text"] and lib.data["looks"] == {}
+    h(message("as paint always next", [PIC], subtype="file_share"))
+    assert "from now on" in bot.say()[-1]["text"] and lib.look_for(pic).medium == "paint"
+
+
+def test_an_iphone_photo_falls_back_to_slacks_jpeg(bot, monkeypatch):
+    asked = []
+    monkeypatch.setattr(slack_app, "download", lambda url, tok: asked.append(url) or _png(6))
+    monkeypatch.setattr(slack_app.library, "HEIC", False)
+    heic = {"id": "F2", "name": "IMG_1.HEIC", "mimetype": "image/heic", "filetype": "heic",
+            "url_private": "https://x/IMG_1.HEIC", "thumb_720": "https://x/t720.jpg", "thumb_1024": "https://x/t1024.jpg"}
+    bot.handlers["event", "message"](message("now", [heic], subtype="file_share"))
+    assert asked == ["https://x/t1024.jpg"] and "Started *IMG_1*" in bot.say()[-1]["text"]
+    monkeypatch.setattr(slack_app.library, "HEIC", True)
+    bot.handlers["event", "message"](message("now", [heic], subtype="file_share"))
+    assert asked[-1] == "https://x/IMG_1.HEIC"
+
+
+def test_completion_posts_a_timelapse_and_failures_are_reported(bot):
+    lib, live = bot.desk.lib, bot.desk.live
+    pic = lib.add_upload(_png(9), "day.png", by="U5")
+    (lib.dir(pic) / "frames").mkdir(parents=True)
+    for k in range(0, 721, 8):
+        Image.new("L", (80, 48), 255 - k // 3).save(lib.frame(pic, k))
+    live.key, live.hash, live.name, live.k = "d1", pic, "day", 700
+    bot.handler.announce_once()
+    live.k = 720
+    bot.handler.announce_once()
+    assert bot.say()[-1]["text"] == "*day* is complete."
+    sent = bot.client.files_upload_v2.call_args.kwargs
+    assert sent["filename"] == "timelapse.gif" and sent["file"][:3] == b"GIF"
+    lib.failures[pic] = "cannot identify image file"
+    bot.handler.announce_once()
+    assert "<@U5>" in bot.say()[-1]["text"] and "couldn't break down" in bot.say()[-1]["text"]

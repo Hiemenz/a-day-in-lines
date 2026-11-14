@@ -12,3 +12,7 @@ PHASES = (("composition", 40), ("linework", 230), ("shading", None), ("finishing
 PAPER_RGB = np.array([0.965, 0.948, 0.905], np.float32)   # preview only
 IMG_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
 UPLOAD_EXT = {"PNG": ".png", "JPEG": ".jpg", "WEBP": ".webp", "BMP": ".bmp", "TIFF": ".tif"}
+MODES = ("mono", "gray", "gray4", "colour")     # what the stored frames are: 1-bit, 8-bit grey, four greys, seven colours
+GRAY4 = (0x00, 0x80, 0xC0, 0xFF)                # the four pixel values Waveshare's 4-grey buffers expect
+PALETTE7 = ((0, 0, 0), (255, 255, 255), (0, 255, 0), (0, 0, 255), (255, 0, 0), (255, 255, 0), (255, 128, 0))
+MIN_FREE_MB = 200                               # don't process or store pictures with less disk than this left

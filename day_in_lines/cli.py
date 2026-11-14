@@ -10,28 +10,65 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from .constants import H, IMG_EXT, TOTAL, W
-from .displays import FileDisplay, WaveshareDisplay
+from .constants import H, MIN_FREE_MB, MODES, TOTAL, W
+from .displays import FileDisplay, InkyDisplay, Rotated, WaveshareDisplay, caption
 from .export import breakdown
-from .library import Library, bake_image
+from .library import Library, bake_image, image_exts
 from .media import DEFAULT_GAMMA, PHASE_NAMES, medium_name, new_sheet, plan
 from .planner import Look
 from .prompts import describe, render as render_prompts
-from .render import dither_1bit
-from .schedule import Overrides, parse_end, progress, schedule, snap, window
+from .render import dither_1bit, frame_for
+from .schedule import Overrides, parse_end, progress, schedule_full, snap, window
 from .server import Live, serve
 
 
+def mode_of(args) -> str:
+    """What the stored frames are: --mode, or 1-bit unless --no-mono asked for greys."""
+    return getattr(args, "mode", None) or ("mono" if getattr(args, "mono", True) else "gray")
+
+
 def make_display(args):
+    disp = _make_display(args)
+    turn = getattr(args, "rotate", 0)
+    if turn:
+        disp = Rotated(disp, turn)
+        if disp.size[0] < disp.size[1]:
+            print("note: the sheet is drawn 5:3 landscape; on an upright panel it is stretched to fit", flush=True)
+    return disp
+
+
+def _make_display(args):
     if args.display == "file":
         return FileDisplay(args.out, tuple(map(int, args.size.split("x"))))
-    if args.display.startswith("waveshare:"):
-        try:
-            return WaveshareDisplay(args.display.split(":", 1)[1], gamma_of(args))
-        except ImportError as e:
-            sys.exit(f"could not load the panel driver ({e}). Is PYTHONPATH set to the e-Paper "
-                     f"python/lib folder? See the README.")
+    try:
+        if args.display.startswith("waveshare:"):
+            return WaveshareDisplay(args.display.split(":", 1)[1], gamma_of(args), mode_of(args))
+        if args.display.startswith("inky"):
+            return InkyDisplay(args.display.partition(":")[2] or "auto", gamma_of(args))
+    except ImportError as e:
+        sys.exit(f"could not load the panel driver ({e}). For Waveshare, is PYTHONPATH set to the e-Paper "
+                 f"python/lib folder? For Inky, `pip install inky`. See the README.")
+    except ValueError as e:
+        sys.exit(str(e))
     sys.exit(f"unknown display {args.display}")
+
+
+def parse_quiet(text):
+    """"22:00-07:00" as (from, to), or None."""
+    if not text:
+        return None
+    try:
+        a, b = (dt.datetime.strptime(t.strip(), "%H:%M").time() for t in text.split("-"))
+    except ValueError:
+        sys.exit("--quiet looks like 22:00-07:00")
+    return a, b
+
+
+def in_quiet(quiet, now: dt.datetime) -> bool:
+    if not quiet:
+        return False
+    a, b, t = quiet[0], quiet[1], now.time()
+    return a <= t < b if a < b else (t >= a or t < b)
 
 
 def check(args):
@@ -52,7 +89,12 @@ def check(args):
         d.text((24, 40), "partial refresh adds the circle" if not extra else "partial refresh worked", fill=0)
         if extra:
             d.ellipse([w // 2 - 40, h // 2 - 40, w // 2 + 40, h // 2 + 40], outline=0, width=4)
-        return dither_1bit(im, gamma_of(args))
+        if mode_of(args) == "mono":
+            return dither_1bit(im, gamma_of(args))
+
+        class Card:                                              # the card as a sheet, for the grey and colour modes
+            gray = staticmethod(lambda size: im)
+        return frame_for(Card, (w, h), mode_of(args), gamma_of(args))
 
     t0 = time.time()
     disp.show(card(), full=True)
@@ -77,12 +119,20 @@ def upload_key_for(args, cache: Path):
         return args.upload_key
     f = cache / "upload_key"
     try:
-        return f.read_text().strip() or None
+        key = f.read_text().strip()
     except FileNotFoundError:
+        key = ""
+    if not key:                          # missing, or emptied by a power cut: make one, never leave uploads open
+        import os
         key = secrets.token_urlsafe(9)
-        f.write_text(key + "\n")
-        f.chmod(0o600)
-        return key
+        tmp = f.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)      # private from the start
+        with os.fdopen(fd, "w") as out:
+            out.write(key + "\n")
+            out.flush()
+            os.fsync(out.fileno())
+        tmp.replace(f)
+    return key
 
 
 def look_of(args) -> Look:
@@ -97,7 +147,7 @@ def gamma_of(args) -> float:
 
 def pick_image(src: Path, day: dt.date) -> Path:
     if src.is_dir():
-        files = sorted(p for p in src.iterdir() if p.suffix.lower() in IMG_EXT)
+        files = sorted(p for p in src.iterdir() if p.suffix.lower() in image_exts())
         if not files:
             sys.exit(f"no images in {src}")
         return files[day.toordinal() % len(files)]
@@ -110,27 +160,36 @@ def run(args):
     disp = make_display(args)
     start = dt.datetime.strptime(args.start, "%H:%M").time()
     dur = window(start, parse_end(args.end))
-    lib = Library(cache, Path(args.image).expanduser(), args.fit, args.seed, disp.size, gamma_of(args), args.mono, look_of(args))
+    args.quiet_hours = parse_quiet(args.quiet)
+    lib = Library(cache, Path(args.image).expanduser(), args.fit, args.seed, disp.size, gamma_of(args), look=look_of(args),
+                  mode=mode_of(args), min_free_mb=args.min_free)
     lib.scan()
     live = Live()
     overrides = Overrides(cache, start, dur)
-    lib.watch(args.scan_every, keep=args.keep, protect=lambda: overrides.hashes() | lib.recent_picks())
+    lib.watch(args.scan_every, keep=args.keep, protect=lambda: overrides.hashes() | lib.recent_picks(),
+              variants=overrides.variants)
+    if args.feed:
+        from .feeds import Feeds
+        Feeds(lib, cache, args.feed, args.feed_max).start(args.feed_every)
+        print(f"watching {len(args.feed)} feed(s) every {args.feed_every} min", flush=True)
+    from .slack_app import Desk               # what the web page and the Slack channel can both do
+    desk = Desk(lib, overrides, start, dur, live)
     if args.serve:
         key = upload_key_for(args, cache)
-        serve(live, args.serve, overrides, start, dur, lib, key, args.bind)
+        serve(live, args.serve, overrides, start, dur, lib, key, args.bind, desk)
         if key:
             print(f"uploads need the key: open http://<this-pi>:{args.serve}/?key={key}", flush=True)
         else:
             print("uploads are open to anyone who can reach this port (--open-uploads)", flush=True)
     if args.slack_channel:
         import os
-        from .slack_app import Desk, start_slack
+        from .slack_app import start_slack
         tokens = os.environ.get("SLACK_BOT_TOKEN"), os.environ.get("SLACK_APP_TOKEN")
         if not all(tokens):
             sys.exit("--slack-channel needs SLACK_BOT_TOKEN (xoxb-...) and SLACK_APP_TOKEN (xapp-...) in the environment")
         try:
-            start_slack(Desk(lib, overrides, start, dur, live), *tokens, args.slack_channel,
-                        [u for u in (args.slack_users or "").replace(",", " ").split() if u])
+            start_slack(desk, *tokens, args.slack_channel,
+                        [u for u in (args.slack_users or "").replace(",", " ").split() if u], args.slack_timelapse)
         except ImportError:
             sys.exit("--slack-channel needs slack_bolt: pip install -r requirements-slack.txt")
     print(f"drawing each day {start:%H:%M}-{(dt.datetime.combine(dt.date.min, start) + dur):%H:%M}"
@@ -139,47 +198,68 @@ def run(args):
     if args.update_every > 1:
         print(f"updating the display every {args.update_every} minutes", flush=True)
 
-    key, shown, since_full = None, -1, 0
+    st = {"key": None, "shown": -1, "since_full": 0, "held": False}
     while True:
         try:
-            key, shown, since_full = tick(args, disp, lib, live, overrides, start, dur, key, shown, since_full)
+            tick(args, disp, lib, live, overrides, start, dur, st)
+            with live.lock:
+                live.error = live.error_since = None
+                live.last_ok = time.time()
         except Exception as e:           # a bad picture or a display hiccup must not stop the clock
             print(f"error: {e}; trying again shortly", flush=True)
-            key = None                   # redraw in full once it works again
+            st["key"] = None             # redraw in full once it works again
+            with live.lock:
+                live.error, live.error_since = str(e) or type(e).__name__, live.error_since or time.time()
             live.wake.wait(30)
         live.wake.clear()
 
 
-def tick(args, disp, lib, live, overrides, start, dur, key, shown, since_full):
+def caption_text(template, name, now: dt.datetime) -> str:
+    """--caption with {name}, {date} (9 November 2026), {day} (Monday) and {time} filled in."""
+    if not template:
+        return ""
+    try:
+        return template.format(name=name, date=f"{now.day} {now:%B %Y}", day=f"{now:%A}", time=f"{now:%H:%M}")
+    except (KeyError, IndexError, ValueError):
+        return template
+
+
+def tick(args, disp, lib, live, overrides, start, dur, st):
     """One minute of the clock: put the right frame up, then wait for the next minute.
-    With --update-every N the frame only advances on every Nth minute of the clock."""
+    `st` carries what the panel shows: key, shown (event), since_full, held (quiet hours)."""
     now = dt.datetime.now()
-    new_key, h, k, started, finish = schedule(now, start, dur, overrides, lib)
-    if new_key is None:
+    s = schedule_full(now, start, dur, overrides, lib)
+    if s["key"] is None:
         print(f"no pictures yet in {lib.src}; waiting", flush=True)
         live.wake.wait(30)
-        return key, shown, since_full
-    if args.update_every > 1:
-        k = progress(snap(now, args.update_every), started, finish - started)
-    lib.ensure(h)                    # normally already baked by the watcher
-    full = new_key != key
-    key = new_key
-    if k != shown or full:
-        since_full = 0 if full else since_full + 1       # a full refresh for any reason restarts the count
-        if args.full_refresh_every and since_full >= args.full_refresh_every:
-            full, since_full = True, 0
-        with Image.open(lib.frame(h, k)) as img:          # static: just open this minute's frame
-            img.load()
-            disp.show(img, full=full)
-        shown = k
-        meta = lib.meta(h)
-        label = meta["events"][k - 1][1] if k else "blank sheet"
-        print(f"{now:%H:%M}  {k:3d}/{TOTAL}  {meta['name']}  {label}", flush=True)
-    with live.lock:
-        live.key, live.hash, live.k, live.name = key, h, k, lib.meta(h)["name"]
-        live.started, live.finish = started, finish
+        return
+    h, k, style = s["hash"], s["k"], s["style"]
+    every = max(1, getattr(args, "update_every", 1) or 1)
+    if every > 1 and not s["paused"]:        # advance only on every Nth minute of the clock
+        k = min(k, progress(snap(now, every), s["began"], s["fin"] - s["began"]))
+    lib.ensure(h, style)             # normally already baked by the watcher
+    name = lib.data["images"].get(h, {}).get("name") or lib.meta(h, style)["name"]
+    quiet = in_quiet(getattr(args, "quiet_hours", None), now) and st["shown"] != -1 and st["key"] is not None
+    with live.lock:                  # the page and the channel see the true state, whatever the panel holds
+        live.key, live.hash, live.k, live.name, live.style = s["key"], h, k, name, style
+        live.started, live.finish, live.paused, live.quiet = s["began"], s["fin"], s["paused"], quiet
+    if quiet:
+        st["held"] = True            # the panel keeps its last frame; catch up with a full refresh afterwards
+    else:
+        full = s["key"] != st["key"] or st["held"]
+        due = k != st["shown"]
+        if full or due:
+            st["since_full"] += 1
+            if full or (args.full_refresh_every and st["since_full"] >= args.full_refresh_every):
+                full, st["since_full"] = True, 0
+            with Image.open(lib.frame(h, k, style)) as img:          # static: just open this minute's frame
+                img.load()
+                disp.show(caption(img, caption_text(getattr(args, "caption", None), name, now)), full=full)
+            st.update(key=s["key"], shown=k, held=False)
+            meta = lib.meta(h, style)
+            label = meta["events"][k - 1][1] if k else "blank sheet"
+            print(f"{now:%H:%M}  {k:3d}/{TOTAL}  {name}  {label}", flush=True)
     live.wake.wait(max(1, 60 - dt.datetime.now().second + 0.5))
-    return key, shown, since_full
 
 
 def preview(image, seed, fit_mode, outdir: Path, every: int, look: Look = Look(), gamma=2.4):
@@ -237,6 +317,7 @@ def main():
     sk.add_argument("--size", default="800x480", help="display size the frames are made for")
     sk.add_argument("--gamma", type=float, default=None)
     sk.add_argument("--gray", action="store_true", help="greyscale frames instead of 1-bit")
+    sk.add_argument("--mode", choices=MODES, default=None, help="what the frames are: mono (1-bit), gray, gray4, colour")
     sk.add_argument("--cache", default="~/.cache/a-day-in-lines")
     sf = sub.add_parser("frame", help="the sheet after k minutes")
     sf.add_argument("k", type=int); sf.add_argument("-o", "--out", default="frame.png")
@@ -248,12 +329,33 @@ def main():
     sq.add_argument("--subject", default="a new scene", help="what the new picture shows")
     sq.add_argument("-o", "--out", default=None, help="write the prompts to this file instead of printing them")
     sc = sub.add_parser("check", help="try the display with a test card before the first long run")
-    sc.add_argument("--display", default="file", help="'file' or 'waveshare:<module>'")
+    sc.add_argument("--display", default="file", help="'file', 'waveshare:<module>' or 'inky:auto'")
     sc.add_argument("--out", default="check.png")
     sc.add_argument("--size", default="800x480")
     sc.add_argument("--gamma", type=float, default=None)
+    sc.add_argument("--mode", choices=MODES, default=None)
+    sc.add_argument("--rotate", type=int, choices=(0, 90, 180, 270), default=0)
     sr = sub.add_parser("run", help="drive the display")
-    sr.add_argument("--display", default="file", help="'file' or 'waveshare:<module>', e.g. waveshare:epd7in5_V2")
+    sr.add_argument("--display", default="file",
+                    help="'file', 'waveshare:<module>' (e.g. waveshare:epd7in5_V2) or 'inky:auto' (Pimoroni Inky)")
+    sr.add_argument("--mode", choices=MODES, default=None,
+                    help="what the panel can show: mono (1-bit, the default), gray4 (four greys) or colour (seven-colour "
+                         "panels; best with --medium paint). Grey and colour panels refresh in full every time")
+    sr.add_argument("--rotate", type=int, choices=(0, 90, 180, 270), default=0,
+                    help="turn the picture: 180 for a panel mounted upside down, 90 or 270 for one on its side")
+    sr.add_argument("--quiet", default=None, metavar="HH:MM-HH:MM",
+                    help="quiet hours, e.g. 22:00-07:00: the panel holds its frame (no refreshes), then catches up")
+    sr.add_argument("--caption", default=None, metavar="TEXT",
+                    help="a small label in the corner; {name}, {date}, {day} and {time} are filled in")
+    sr.add_argument("--feed", action="append", default=[], metavar="URL",
+                    help="an RSS/Atom feed, a list of image addresses, or an image address to fetch pictures from "
+                         "(can be given more than once)")
+    sr.add_argument("--feed-every", type=int, default=60, metavar="MIN", help="how often to look at the feeds")
+    sr.add_argument("--feed-max", type=int, default=5, metavar="N", help="most new pictures to take from a feed each time")
+    sr.add_argument("--min-free", type=int, default=MIN_FREE_MB, metavar="MB",
+                    help="stop storing and processing pictures when the disk has less than this free (0 = no check)")
+    sr.add_argument("--slack-timelapse", action=argparse.BooleanOptionalAction, default=True,
+                    help="post a timelapse GIF in the Slack channel when a drawing completes")
     sr.add_argument("--out", default="current.png")
     sr.add_argument("--size", default="800x480")
     sr.add_argument("--start", default="07:00", help="when the drawing begins each day")
@@ -300,10 +402,11 @@ def main():
     if args.cmd == "bake":
         size = tuple(map(int, args.size.split("x")))
         if args.to:                                   # one image, called by the watcher
-            bake_image(Path(args.image), seed, args.fit, Path(args.to), size, gamma_of(args), not args.gray, look_of(args))
+            bake_image(Path(args.image), seed, args.fit, Path(args.to), size, gamma_of(args),
+                       args.mode or ("gray" if args.gray else "mono"), look_of(args))
             return
         lib = Library(Path(args.cache).expanduser(), Path(args.image).expanduser(), args.fit, args.seed,
-                      size, gamma_of(args), not args.gray, look_of(args))
+                      size, gamma_of(args), look=look_of(args), mode=args.mode or ("gray" if args.gray else "mono"))
         lib.scan()
         todo = lib.unbaked()
         print(f"{len(lib.data['images'])} pictures, {len(todo)} to break down")
