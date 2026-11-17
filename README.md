@@ -305,6 +305,18 @@ The grey, colour and Inky paths are covered by tests against stand-in drivers, b
 - `GET /health`: 200 while the display loop is working; 503 once it has been failing, or silent, for five minutes, with the last error. Point an uptime checker at it.
 - `POST /pause`, `/resume`, `/skip`, `/restart`, `/cancel?id=...`, `/stop_repeat?id=...`: the same actions as the Slack commands. They need the key, like uploads.
 - **Disk:** when less than `--min-free` MB is left (200 by default), uploads are refused with a message and pictures are not processed until there is room; they are not marked as bad.
+## How the pencil behaves
+
+The pencil path tries to look like a person at work, not a fade-in:
+
+- **Pressure and speed:** each stroke presses hardest in the middle and lifts at the ends. Long, quick strokes are lighter and thinner; short, careful ones are darker.
+- **Going over a line:** some contours are drawn a second time, a touch off, as an animator re-states a line.
+- **Slips:** now and then a line goes down in the wrong place and is rubbed out a couple of minutes later.
+- **One area at a time:** the shading is split into a few zones. The hand finishes one before moving to a neighbour, hatching at a steady angle in each. Light tones keep to one direction; only the darker layers cross it.
+- **Stepping back:** about one minute in fifteen the sheet holds still, in runs of two or three, as if the artist were looking at it. The day is still 720 minutes, and the panel isn't refreshed for a minute where nothing changed.
+- **The sheet:** pencilled scene note and peg rail beside the peg holes.
+- **`--show-pencil`:** draws a small pencil resting on the last mark. It is added to the stored frame only, never to the paper, and only for `--medium pencil`.
+
 ## Run at boot
 
 ```bash

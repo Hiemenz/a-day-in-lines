@@ -136,7 +136,7 @@ def upload_key_for(args, cache: Path):
 
 
 def look_of(args) -> Look:
-    return Look(args.detail, args.contrast, getattr(args, "medium", "pencil"))
+    return Look(args.detail, args.contrast, getattr(args, "medium", "pencil"), tool=getattr(args, "show_pencil", False))
 
 
 def gamma_of(args) -> float:
@@ -345,6 +345,8 @@ def main():
                     help="turn the picture: 180 for a panel mounted upside down, 90 or 270 for one on its side")
     sr.add_argument("--quiet", default=None, metavar="HH:MM-HH:MM",
                     help="quiet hours, e.g. 22:00-07:00: the panel holds its frame (no refreshes), then catches up")
+    sr.add_argument("--show-pencil", action="store_true",
+                    help="draw a small pencil resting on the last mark, as if the hand were there (pencil medium)")
     sr.add_argument("--caption", default=None, metavar="TEXT",
                     help="a small label in the corner; {name}, {date}, {day} and {time} are filled in")
     sr.add_argument("--feed", action="append", default=[], metavar="URL",

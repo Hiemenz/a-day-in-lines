@@ -4,7 +4,7 @@ from __future__ import annotations
 import functools
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 from .constants import GRAY4, H, PALETTE7, PAPER_RGB, SS, W
 from .pen import Pen, arc
@@ -30,6 +30,20 @@ class Sheet:
         for cx, rx in ((400, 7), (352, 10), (448, 10)):  # the "almost" in almost blank
             for s in pen.line(arc(cx, 468, rx, 3.2, 0, 361), p=.15, w=.8, wob=0, taper=False):
                 self.draw_stroke(s)
+        for s in pen.line([(330, 459), (470, 459)], p=.12, w=.7, wob=.2, taper=False):      # the rail the pegs sit on
+            self.draw_stroke(s)
+        self.label(f"SC {seed % 90 + 10}   CUT {seed // 90 % 9 + 1}   720 DRAWINGS", 14, 458)    # the sheet's own scene note
+
+    def label(self, text, x, y):
+        """A small pencilled note, in the sheet's corner."""
+        m = Image.new("L", (W * SS, H * SS), 0)
+        try:
+            font = ImageFont.load_default(size=9 * SS)
+        except TypeError:
+            font = ImageFont.load_default()
+        ImageDraw.Draw(m).text((x * SS, y * SS), text, font=font, fill=255)
+        a = np.asarray(m.filter(ImageFilter.GaussianBlur(0.5)), np.float32) / 255
+        self.canvas *= 1 - np.clip(a * .4 * np.clip(.3 + self.grain, 0, 1.2), 0, .9)
 
     def draw_event(self, e):
         for s in e["strokes"]:
@@ -52,8 +66,10 @@ class Sheet:
             tp = 0.3 + 0.7 * np.sqrt(np.clip(np.minimum(t / 0.14, (1 - t) / 0.14), 0, 1))
         else:
             tp = np.ones(n)
-        pr = np.clip(s["p"] * tp * (0.86 + 0.14 * np.sin(2 * np.pi * (t * 2.3 + s["ph"]))), 0, 1)
-        wpx = s["w"] * SS * 1.1
+        sp = s.get("sp", 0.5)                    # fast strokes are lighter and thinner, slow ones darker
+        bulge = 0.92 + 0.16 * np.sin(np.pi * t)  # the hand presses hardest mid-stroke
+        pr = np.clip(s["p"] * tp * bulge * (1.1 - 0.2 * sp) * (0.86 + 0.14 * np.sin(2 * np.pi * (t * 2.3 + s["ph"]))), 0, 1)
+        wpx = s["w"] * SS * 1.1 * (1.15 - 0.3 * sp)
         o = np.array([x0, y0], np.float32)
         for i in range(n - 1):
             a = tuple((pts[i] - o).tolist()); b = tuple((pts[i + 1] - o).tolist())
@@ -179,6 +195,25 @@ def quantize7(rgb: Image.Image) -> Image.Image:
     pal = Image.new("P", (1, 1))
     pal.putpalette([c for col in PALETTE7 for c in col] + [0, 0, 0] * (256 - len(PALETTE7)))
     return rgb.convert("RGB").quantize(palette=pal, dither=Image.FLOYDSTEINBERG)
+
+
+def with_pencil(img, tip, scale=1.0):
+    """The pencil resting on the last mark: a slim body going up and to the right from its tip. Drawn onto
+    the finished frame only, never the sheet, so what is on the paper is unchanged."""
+    ink, paper = {"1": (0, 1), "L": (0, 255), "RGB": ((0, 0, 0), (255, 255, 255))}.get(img.mode, (None, None))
+    if ink is None:
+        return img
+    out = img.copy()
+    x, y = float(tip[0]) * scale, float(tip[1]) * scale
+    u = np.array([.5, -.866])                      # along the pencil, away from the tip (60 degrees up)
+    n = np.array([-u[1], u[0]])
+    wd, cone, body = 3.2 * scale, 12 * scale, 58 * scale
+    P = lambda a, b: tuple((np.array([x, y]) + u * a + n * b).tolist())
+    d = ImageDraw.Draw(out)
+    d.polygon([P(0, 0), P(cone, -wd), P(cone, wd)], fill=paper, outline=ink)           # the sharpened point
+    d.polygon([P(cone, -wd), P(body, -wd), P(body, wd), P(cone, wd)], fill=paper, outline=ink)
+    d.line([P(body * .86, -wd), P(body * .86, wd)], fill=ink, width=1)                # the band by the end
+    return out
 
 
 def frame_for(sheet, size, mode="mono", gamma=2.4) -> Image.Image:
