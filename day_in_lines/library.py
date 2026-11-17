@@ -15,7 +15,7 @@ from .constants import BAKE_VERSION, H, IMG_EXT, MAX_UPLOAD_PIXELS, MIN_FREE_MB,
 from .export import viewer_plan
 from .media import DEFAULT_GAMMA, medium_name, new_sheet, plan
 from .planner import Look
-from .render import frame_for
+from .render import frame_for, with_pencil
 
 try:                                   # optional: iPhone photos (pip install pillow-heif)
     import pillow_heif
@@ -176,7 +176,7 @@ class Library:
         """How this picture is drawn: the display's setting, unless the picture was given its
         own, unless this one drawing (`style`) was given its own."""
         o, s, d = self.data["looks"].get(h) or {}, style or {}, self.look
-        return Look(*(s.get(k) or o.get(k) or getattr(d, k) for k in ("detail", "contrast", "medium")))
+        return Look(*(s.get(k) or o.get(k) or getattr(d, k) for k in ("detail", "contrast", "medium")), tool=d.tool)
 
     def fit_for(self, h, style=None) -> str:
         return (style or {}).get("fit") or (self.data["looks"].get(h) or {}).get("fit") or self.fit
@@ -559,7 +559,10 @@ def _bake_image(image, seed, fit, out, size, gamma, mode, look):
     for k in range(TOTAL + 1):
         if k:
             sh.draw_event(events[k - 1])
-        frame_for(sh, size, mode, gamma).save(tmp / "frames" / f"{k:03d}.png")
+        img = frame_for(sh, size, mode, gamma)
+        if look.tool and look.medium == "pencil" and k and events[k - 1]["strokes"]:       # the pencil, where the hand just was
+            img = with_pencil(img, events[k - 1]["strokes"][-1]["pts"][-1], size[0] / W)
+        img.save(tmp / "frames" / f"{k:03d}.png")
     meta = {"name": image.stem, "seed": seed, "medium": look.medium, "fit": fit, "mode": mode, "size": list(size), "baked": dt.datetime.now().isoformat(timespec="seconds"),
             "events": [[e["phase"], e["label"], len(e["strokes"])] for e in events]}
     (tmp / "meta.json").write_text(json.dumps(meta))

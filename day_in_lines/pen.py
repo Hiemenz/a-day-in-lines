@@ -49,7 +49,7 @@ class Pen:
             off += self.rng.normal(0, amp / 2) * np.sin(2 * np.pi * (cycles * s + self.rng.random()))
         return p + nor * off[:, None]
 
-    def line(self, pts, p=0.5, w=1.0, wob=0.5, over=0.0, taper=True, jitter=0.0):
+    def line(self, pts, p=0.5, w=1.0, wob=0.5, over=0.0, taper=True, jitter=0.0, speed=None):
         r = self.rng
         pts = np.array(pts, float)
         if len(pts) < 2:
@@ -64,5 +64,8 @@ class Pen:
         q = self._wobble(pts, wob)
         if length(q) < 2.0:
             return []
+        L = length(q)
+        if speed is None:                      # long strokes are made quickly, short careful ones slowly
+            speed = 0.6 * min(L / 120, 1.0) + r.uniform(0, 0.4)
         return [dict(pts=q.astype(np.float32), p=float(np.clip(p * r.uniform(0.9, 1.1), 0, 1)),
-                     w=float(w), taper=bool(taper), ph=float(r.random()))]
+                     w=float(w), taper=bool(taper), ph=float(r.random()), sp=float(np.clip(speed, 0, 1)))]

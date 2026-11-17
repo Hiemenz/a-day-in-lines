@@ -84,7 +84,9 @@ def test_plan_draws_guides_early_and_erases_them_all(plan):
     assert all(k == "guide" for e in kinds[:40] for k in e) and any(kinds[:40])
     erasing = [i for i, e in enumerate(plan) if e["label"] == "erase construction lines"]
     assert erasing and min(erasing) >= 230
-    assert not any(k == "guide" for e in kinds[40:] for k in e)
+    # after the composition only a slip in the linework is ever put down as a guide (it is rubbed out soon after)
+    assert not any(k == "guide" for i, e in enumerate(plan) if e["phase"] != "linework" and i >= 40
+                   for k in [s.get("kind") for s in e["strokes"]])
     assert len(plan) == 720
 
 

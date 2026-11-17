@@ -21,13 +21,14 @@ class Look:
     detail: float = 1.0
     contrast: float = 1.0
     medium: str = "pencil"             # or "paint"
+    tool: bool = False                 # show the pencil's tip and body where the last mark went down
 
     @property
     def suffix(self) -> str:
         """Part of a baked folder's name; empty for the defaults so old bakes stay valid."""
         medium = "" if self.medium == "pencil" else f"-{self.medium}"
         tuned = "" if (self.detail, self.contrast) == (1.0, 1.0) else f"-d{self.detail:g}-c{self.contrast:g}"
-        return medium + tuned
+        return medium + tuned + ("-pencil" if self.tool else "")
 
 
 def load_target(path: Path, fit="crop", contrast=1.0):
@@ -316,26 +317,42 @@ def build_plan(image: Path, seed: int, fit_mode="crop", look: Look = Look()):
     near_med = ndi.binary_dilation(med_e, iterations=2)
     fine = [p for p in fine if sample(near_med.astype(float), p["pts"]).mean() < .5]
     ridges = ridge_paths(gray, tone, rng)
-    lines = []
+    lines, slips = [], []
     for label, pool, pbase, budget in (("contour", med, .4, 120), ("thin line", ridges, .45, 60),
                                        ("detail line", fine, .36, 70)):
         for grp in group_paths(pool, budget, 40, rng):
-            st = []
+            st, wrong = [], []
             for p in grp:
-                st += pen.line(p["pts"], p=pbase + .32 * p["dark"], w=1.0, wob=.45, over=1.5)
-            lines.append(ev("linework", label, st))
+                pts, dk = np.asarray(p["pts"], float), p["dark"]
+                st += pen.line(pts, p=pbase + .32 * dk, w=1.0, wob=.45, over=1.5)
+                if label == "contour" and rng.random() < .14:        # going over a line again, a touch off
+                    st += pen.line(pts + rng.normal(0, 1.1, 2), p=.7 * pbase + .2 * dk, w=.85, wob=.5, over=1.0)
+                if label != "thin line" and length(pts) > 20 and rng.random() < .05:     # a slip: put down in the
+                    a = rng.uniform(0, 2 * np.pi)                                         # wrong place, rubbed out soon
+                    wrong += guide(pen.line(pts + 4 * np.array([np.cos(a), np.sin(a)]), p=pbase + .3 * dk,
+                                            w=1.0, wob=.6, over=1.5))
+            lines.append(ev("linework", label, st + wrong))
+            if wrong:
+                slips.append((len(lines) - 1, [w["pts"] for w in wrong]))
+    for i, pts_list in slips:                                       # the eraser comes two minutes later
+        j = min(i + 2, len(lines) - 1)
+        for q in pts_list:
+            q = np.asarray(q, np.float32)
+            back = q[::-1] + rng.normal(0, 1.2, (1, 2)).astype(np.float32)
+            lines[j]["strokes"].append(dict(pts=np.vstack([q, back]), p=1.0, w=4.5, taper=False, ph=0.0, kind="erase"))
     phases["linework"] = lines
 
     # ---- shading + finishing: hatching layers -----------------------------
     theta, coh = orientation_field(gray)
     layers = [
         # (threshold, spacing, angle offset, pressure, max stroke length, follow-image weight)
+        # light tones keep to one direction; only the dark layers cross it
         (.12, 4.4, 0, .26, 30, .8),
-        (.20, 4.0, 58, .30, 28, .6),
-        (.34, 3.8, -46, .34, 26, .4),
-        (.48, 3.5, 88, .38, 24, .3),
-        (.62, 3.3, 22, .44, 22, .3),
-        (.76, 3.1, -20, .5, 20, .3),
+        (.20, 4.0, 8, .30, 28, .6),
+        (.34, 3.8, -7, .34, 26, .4),
+        (.48, 3.5, 60, .38, 24, .3),
+        (.62, 3.3, -50, .44, 22, .3),
+        (.76, 3.1, 25, .5, 20, .3),
         (.86, 3.0, 70, .62, 16, .2),      # -> finishing: darkest accents
     ]
     names = ["first tone", "cross-hatching", "third layer", "deepening", "dark masses",
@@ -343,18 +360,30 @@ def build_plan(image: Path, seed: int, fit_mode="crop", look: Look = Look()):
     noise = ndi.gaussian_filter(np.random.default_rng([seed, 9]).normal(0, 1, (H, W)), 6)
     noise = noise / (noise.std() + 1e-9) * .035
     soft = ndi.gaussian_filter(tone, 2.0)
-    shade, accent = [], []
     base_angle = 50.0
-    for li, (thr, spc, aoff, pr, maxlen, follow) in enumerate(layers):
+    # zones: the hand finishes one area before moving to the next, hatching at its own steady angle
+    zone, zangle, zorder = zones(soft, rng)
+    masks = []
+    for thr, *_ in layers:
         mask = ndi.binary_opening(soft > thr + noise, iterations=2)
         lab, n = ndi.label(mask)
         if n:
             area = ndi.sum(mask, lab, index=np.arange(1, n + 1))
             mask = np.concatenate([[False], area >= 150])[lab]
-        items = hatch_layer(pen, rng, mask, theta, coh, base_angle + aoff, spc / d ** .5, pr, maxlen, follow)
-        is_acc = li == len(layers) - 1
-        for grp in organic_groups(items, int(mask.sum()), rng):
-            (accent if is_acc else shade).append(ev("finishing" if is_acc else "shading", names[li], grp))
+        masks.append(mask)
+    shade, accent = [], []
+    for z in zorder:
+        for li, (thr, spc, aoff, pr, maxlen, follow) in enumerate(layers[:-1]):
+            mz = masks[li] & (zone == z)
+            if not mz.any():
+                continue
+            items = hatch_layer(pen, rng, mz, theta, coh, base_angle + zangle[z] + aoff, spc / d ** .5, pr, maxlen, follow)
+            for grp in organic_groups(items, int(mz.sum()), rng):
+                shade.append(ev("shading", names[li], grp))
+    thr, spc, aoff, pr, maxlen, follow = layers[-1]
+    items = hatch_layer(pen, rng, masks[-1], theta, coh, base_angle + aoff, spc / d ** .5, pr, maxlen, follow)
+    for grp in organic_groups(items, int(masks[-1].sum()), rng):
+        accent.append(ev("finishing", names[-1], grp))
     # finishing also re-states the strongest dark edges with real pressure
     darkest = sorted(med + fine + ridges, key=lambda p: -(p["dark"] * 2 + p["score"] / 4000))[:40]
     for grp in group_paths(darkest, 90, 50, rng):
@@ -367,17 +396,64 @@ def build_plan(image: Path, seed: int, fit_mode="crop", look: Look = Look()):
 
     # ---- fit everything into exactly 720 minutes -------------------------
     sizes = {k: n for k, n in PHASES if n}
-    out = {}
-    for k in ("composition", "linework", "finishing"):
-        out[k] = fit(phases[k], sizes[k])
+    out, rests = {}, {}
+    for k, share in (("composition", 0), ("linework", .06), ("finishing", .08)):
+        rests[k] = int(round(sizes[k] * share))
+        out[k] = pause_events(fit(phases[k], sizes[k] - rests[k]), rests[k], rng)
     rub = erase_events(guide_ev, rng)       # the guides come out before the shading goes in
-    out["shading"] = rub + fit(shade, TOTAL - sum(len(v) for v in out.values()) - len(rub))
+    room = TOTAL - sum(len(v) for v in out.values()) - len(rub)
+    rest = int(round(room * .07))           # stepping back to look: the sheet holds still for a few minutes
+    out["shading"] = rub + pause_events(fit(shade, room - rest), rest, rng)
     events = [e for k, _ in PHASES for e in out[k]]
     if len(events) != TOTAL:   # tiny/empty images: pad with quiet restatements
         while len(events) < TOTAL:
             events.append(ev("finishing", "pause", []))
         events = events[:TOTAL]
     return events
+
+
+def zones(soft, rng, k=5):
+    """Split the sheet into a few organic zones around where the tone is: (zone map, a steady hatching
+    angle for each, the order a hand would work through them: mostly to the neighbour)."""
+    ys, xs = np.nonzero(soft > .1)
+    if len(xs) < 50:
+        return np.zeros(soft.shape, int), [0.0], [0]
+    k = int(min(k, max(1, len(xs) // 400)))
+    pick = rng.choice(len(xs), k, replace=False)
+    c = np.stack([xs[pick], ys[pick]], 1).astype(float)
+    ang, stretch = rng.uniform(0, np.pi, k), rng.uniform(.7, 1.5, k)
+    gy, gx = np.mgrid[0:H:4, 0:W:4]
+    d = np.stack([gx - c[i, 0] for i in range(k)]), np.stack([gy - c[i, 1] for i in range(k)])
+    u = d[0] * np.cos(ang)[:, None, None] + d[1] * np.sin(ang)[:, None, None]
+    v = d[1] * np.cos(ang)[:, None, None] - d[0] * np.sin(ang)[:, None, None]
+    small = np.argmin(np.hypot(u / stretch[:, None, None], v * stretch[:, None, None]), axis=0)
+    zone = np.kron(small, np.ones((4, 4), int))[:H, :W]
+    angle = list(rng.uniform(-25, 25, k))
+    order, todo = [], list(range(k))
+    cur = todo.pop(int(rng.integers(k)))
+    order.append(cur)
+    while todo:
+        dist = np.hypot(*(c[todo] - c[cur]).T)
+        near = np.argsort(dist)[:2]
+        cur = todo.pop(int(rng.choice(near, p=[.75, .25][:len(near)] if len(near) == 2 else [1.0])))
+        order.append(cur)
+    return zone, angle, order
+
+
+def pause_events(events, n, rng, label="stepping back"):
+    """Slip n empty minutes in among the events, in runs of two or three, never at the start."""
+    if n <= 0 or len(events) < 2:
+        return events
+    runs = max(1, n // 3)
+    where = sorted(int(i) for i in rng.choice(np.arange(1, len(events)), min(runs, len(events) - 1), replace=False))
+    sizes = [n // len(where) + (1 if i < n % len(where) else 0) for i in range(len(where))]
+    gaps = dict(zip(where, sizes))
+    out = []
+    for i, e in enumerate(events):
+        for _ in range(gaps.get(i, 0)):
+            out.append(dict(phase=e["phase"], label=label, strokes=[]))
+        out.append(e)
+    return out
 
 
 def hatch_layer(pen, rng, mask, theta, coh, angle, spc, pr, maxlen, follow):
