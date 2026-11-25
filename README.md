@@ -50,7 +50,7 @@ python3 a_day_in_lines.py --image ~/pictures run --display waveshare:epd7in5_V2 
 | `day_in_lines/viewer.html` | The viewer page the Pi serves; the program fills in the live drawing |
 | `web/standalone.html` | The same viewer as one offline page with a sample drawing built in. Open it in any browser to break down your own images; no Pi needed (rebuild it with `python web/build_standalone.py` after changing the viewer or planner) |
 | `examples/tanker.png` | Sample image |
-| `lessons/` | Step-by-step lessons as data files, in folders by subject ([index](lessons/README.md)): a swan traced from Lutz, and 12 simpler drawings made for this project |
+| `lessons/` | Step-by-step lessons as data files, in folders by subject ([index](lessons/README.md)): a swan traced from Lutz, and simpler drawings made for this project |
 | `docs/ideas/` | Ideas for more lessons: 366 subjects, and what is in Lutz's book by page |
 | `docs/images/` | The images in this README: final sheet, e-ink frame, hourly contact sheet, timelapse, and the same for paint |
 | `systemd/day-in-lines.service` | Runs the display at boot |
