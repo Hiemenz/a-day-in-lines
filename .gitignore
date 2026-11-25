@@ -9,3 +9,4 @@ frame.png
 *.egg-info/
 build/
 dist/
+.venv/
