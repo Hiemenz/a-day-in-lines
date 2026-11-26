@@ -38,11 +38,17 @@ File names must be different from each other, even in different folders. The for
 | food | [Garden Carrots](food/carrot.json) | 10 | Made for this project |
 | food | [Pair of Cherries](food/cherries.json) | 10 | Made for this project |
 | food | [Cupcake](food/cupcake.json) | 10 | Made for this project |
+| food | [Frosted Doughnut](food/doughnut.json) | 10 | Made for this project |
 | food | [Boiled Egg in a Cup](food/egg-cup.json) | 10 | Made for this project |
+| food | [Egg in a Frying Pan](food/frying-pan-egg.json) | 10 | Made for this project |
 | food | [Bunch of Grapes](food/grapes.json) | 10 | Made for this project |
 | food | [Ice Cream Cone](food/ice-cream-cone.json) | 10 | Made for this project |
+| food | [Ice Pop](food/ice-pop.json) | 10 | Made for this project |
 | food | [Lemon with a Slice](food/lemon.json) | 10 | Made for this project |
 | food | [Swirl Lollipop](food/lollipop.json) | 10 | Made for this project |
+| food | [Mug of Cocoa](food/mug-of-cocoa.json) | 10 | Made for this project |
+| food | [Garden Onion](food/onion.json) | 10 | Made for this project |
+| food | [Pea Pod](food/pea-pod.json) | 10 | Made for this project |
 | food | [Fruit Pie](food/pie.json) | 10 | Made for this project |
 | food | [Pineapple](food/pineapple.json) | 10 | Made for this project |
 | food | [Pumpkin](food/pumpkin.json) | 10 | Made for this project |
@@ -67,6 +73,8 @@ File names must be different from each other, even in different folders. The for
 | home | [Cup and Saucer](home/cup-and-saucer.json) | 10 | Made for this project |
 | home | [Sealed Letter](home/envelope.json) | 10 | Made for this project |
 | home | [Fireplace](home/fireplace.json) | 10 | Made for this project |
+| home | [Old Flatiron](home/flatiron.json) | 10 | Made for this project |
+| home | [Desk Globe](home/globe.json) | 10 | Made for this project |
 | home | [Hourglass](home/hourglass.json) | 10 | Made for this project |
 | home | [Jar of Jam](home/jam-jar.json) | 10 | Made for this project |
 | home | [Old Iron Key](home/key.json) | 10 | Made for this project |
@@ -74,18 +82,23 @@ File names must be different from each other, even in different folders. The for
 | home | [Magnifying Glass](home/magnifying-glass.json) | 10 | Made for this project |
 | home | [Mantel Clock](home/mantel-clock.json) | 10 | Made for this project |
 | home | [Oil Lamp](home/oil-lamp.json) | 10 | Made for this project |
+| home | [Old Wooden Radio](home/old-radio.json) | 10 | Made for this project |
 | home | [Pocket Watch](home/pocket-watch.json) | 10 | Made for this project |
 | home | [Quill and Inkwell](home/quill-and-inkwell.json) | 10 | Made for this project |
 | home | [Rocking Chair](home/rocking-chair.json) | 10 | Made for this project |
 | home | [Scissors](home/scissors.json) | 10 | Made for this project |
+| home | [Old Sewing Machine](home/sewing-machine.json) | 10 | Made for this project |
+| home | [Spool of Thread](home/spool-and-needle.json) | 10 | Made for this project |
 | home | [Teapot](home/teapot.json) | 10 | Made for this project |
 | home | [Top Hat](home/top-hat.json) | 10 | Made for this project |
 | home | [Open Umbrella](home/umbrella.json) | 10 | Made for this project |
 | music | [Accordion](music/accordion.json) | 10 | Made for this project |
+| music | [Banjo](music/banjo.json) | 10 | Made for this project |
 | music | [Brass Hand Bell](music/bell.json) | 10 | Made for this project |
 | music | [Toy Drum](music/drum.json) | 10 | Made for this project |
 | music | [Guitar](music/guitar.json) | 10 | Made for this project |
 | music | [Harp](music/harp.json) | 10 | Made for this project |
+| music | [Metronome](music/metronome.json) | 10 | Made for this project |
 | music | [Trumpet](music/trumpet.json) | 10 | Made for this project |
 | music | [Violin](music/violin.json) | 10 | Made for this project |
 | nature | [Two Acorns](nature/acorn.json) | 10 | Made for this project |
@@ -106,8 +119,11 @@ File names must be different from each other, even in different folders. The for
 | places | [Country Church](places/church.json) | 10 | Made for this project |
 | places | [Clock Tower](places/clock-tower.json) | 10 | Made for this project |
 | places | [Desert Island](places/desert-island.json) | 10 | Made for this project |
+| places | [Garden Fountain](places/fountain.json) | 10 | Made for this project |
 | places | [Mountain Lake](places/mountain-lake.json) | 10 | Made for this project |
+| places | [Park Bench](places/park-bench.json) | 10 | Made for this project |
 | places | [Stone Bridge](places/stone-bridge.json) | 10 | Made for this project |
+| places | [Old Street Lamp](places/street-lamp.json) | 10 | Made for this project |
 | places | [Water Mill](places/water-mill.json) | 10 | Made for this project |
 | places | [Windmill](places/windmill.json) | 10 | Made for this project |
 | places | [Wishing Well](places/wishing-well.json) | 10 | Made for this project |
@@ -118,12 +134,16 @@ File names must be different from each other, even in different folders. The for
 | play | [Spinning Top](play/spinning-top.json) | 10 | Made for this project |
 | play | [Yo-Yo](play/yo-yo.json) | 10 | Made for this project |
 | sea | [Ship’s Anchor](sea/anchor.json) | 10 | Made for this project |
+| sea | [Bell Buoy](sea/buoy.json) | 10 | Made for this project |
 | sea | [Crab](sea/crab.json) | 10 | Made for this project |
 | sea | [Jellyfish](sea/jellyfish.json) | 10 | Made for this project |
 | sea | [Lighthouse](sea/lighthouse.json) | 10 | Made for this project |
+| sea | [Message in a Bottle](sea/message-in-a-bottle.json) | 10 | Made for this project |
+| sea | [Octopus](sea/octopus.json) | 10 | Made for this project |
 | sea | [Sailing Ship](sea/sailing-ship.json) | 10 | Made for this project |
 | sea | [Scallop Shell](sea/scallop-shell.json) | 10 | Made for this project |
 | sea | [Sea Turtle](sea/sea-turtle.json) | 10 | Made for this project |
+| sea | [Seahorse](sea/seahorse.json) | 10 | Made for this project |
 | sea | [Starfish](sea/starfish.json) | 10 | Made for this project |
 | sea | [Whale Spouting](sea/whale.json) | 10 | Made for this project |
 | sky | [Comet](sky/comet.json) | 10 | Made for this project |
@@ -135,15 +155,20 @@ File names must be different from each other, even in different folders. The for
 | tools | [Padlock](tools/padlock.json) | 10 | Made for this project |
 | tools | [Palette and Brushes](tools/palette-and-brush.json) | 10 | Made for this project |
 | tools | [Watering Can](tools/watering-can.json) | 10 | Made for this project |
+| tools | [Wheelbarrow](tools/wheelbarrow.json) | 10 | Made for this project |
+| transport | [Airship](transport/airship.json) | 10 | Made for this project |
 | transport | [Old Bicycle](transport/bicycle.json) | 10 | Made for this project |
 | transport | [Biplane](transport/biplane.json) | 10 | Made for this project |
 | transport | [Canoe on a Lake](transport/canoe.json) | 10 | Made for this project |
+| transport | [Covered Wagon](transport/covered-wagon.json) | 10 | Made for this project |
 | transport | [Hot-Air Balloon](transport/hot-air-balloon.json) | 10 | Made for this project |
 | transport | [Steam Locomotive](transport/locomotive.json) | 10 | Made for this project |
 | transport | [Motorcar of the 1910s](transport/motorcar.json) | 10 | Made for this project |
 | transport | [Rocket Ship](transport/rocket.json) | 10 | Made for this project |
 | transport | [Old Streetcar](transport/streetcar.json) | 10 | Made for this project |
 | transport | [Submarine](transport/submarine.json) | 10 | Made for this project |
+| transport | [Farm Tractor](transport/tractor.json) | 10 | Made for this project |
+| transport | [Tugboat](transport/tugboat.json) | 10 | Made for this project |
 | winter | [Cabin in the Snow](winter/cabin.json) | 10 | Made for this project |
 | winter | [Sprig of Holly](winter/holly.json) | 10 | Made for this project |
 | winter | [Igloo](winter/igloo.json) | 10 | Made for this project |
