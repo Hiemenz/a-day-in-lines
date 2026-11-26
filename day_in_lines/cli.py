@@ -13,6 +13,8 @@ from PIL import Image, ImageDraw
 from .constants import H, MIN_FREE_MB, MODES, TOTAL, W
 from .displays import FileDisplay, InkyDisplay, Rotated, WaveshareDisplay, caption
 from .export import breakdown
+from .lesson import (HOURLY_DRAW_MINUTES, STEP_MINUTES, Frames, Hourly, check_lessons, lesson_files, load_lesson,
+                     parts_for, play, preview as preview_lesson, show_on_time, step_times)
 from .library import Library, bake_image, image_exts
 from .media import DEFAULT_GAMMA, PHASE_NAMES, medium_name, new_sheet, plan
 from .planner import Look
@@ -108,6 +110,79 @@ def check(args):
     if args.display == "file":
         print(f"wrote {args.out}")
     print("If the panel showed the test card, then the circle without a full blink, you're ready to `run`.")
+
+
+def run_lesson(args):
+    """Play step-by-step lessons on the display, or write previews of them."""
+    try:
+        files = lesson_files([Path(f).expanduser() for f in args.file])
+        if args.check:
+            good, problems = check_lessons(files, args.draw_minutes or HOURLY_DRAW_MINUTES)
+            for f, why in problems:
+                print(f"{f}: {why}")
+            print(f"{len(good)} of {len(files)} lessons are ready to show")
+            if problems:
+                sys.exit(1)
+            return
+        loaded = []
+        for f in files:
+            try:
+                loaded.append((f, load_lesson(f)))
+            except (OSError, ValueError) as e:
+                if not args.hourly:
+                    raise
+                print(f"skipping a lesson: {e}", flush=True)      # one bad file must not stop the day
+        if not loaded:
+            raise ValueError("none of the lesson files can be shown")
+    except (OSError, ValueError) as e:
+        sys.exit(f"could not read the lesson: {e}")
+    files, lessons = [f for f, _ in loaded], [x for _, x in loaded]
+    if len(lessons) > 1 and not args.hourly:
+        sys.exit("more than one lesson needs --hourly")
+    if args.preview:
+        out = Path(args.preview)
+        for f, lesson in zip(files, lessons):
+            preview_lesson(lesson, out / f.stem if len(lessons) > 1 else out, gamma_of(args))
+        print(f"wrote previews to {out}")
+        return
+    draw = args.draw_minutes
+    if args.hourly and draw is None and args.step_minutes is None:
+        draw = HOURLY_DRAW_MINUTES
+    each = args.step_minutes if args.step_minutes is not None else STEP_MINUTES
+    try:
+        timings = [step_times(len(x.steps), each, draw) for x in lessons]
+    except ValueError as e:
+        sys.exit(str(e))
+    if args.hourly:
+        for lesson, times in zip(lessons, timings):
+            if sum(times) >= 60:
+                sys.exit(f"{lesson.title} takes {sum(times)} minutes to draw; with --hourly it must be under 60")
+    if not 1 <= args.hours <= 24:
+        sys.exit("--hours is 1 to 24")
+    start = None
+    if args.start != "now":
+        try:
+            start = dt.datetime.strptime(args.start, "%H:%M").time()
+        except ValueError:
+            sys.exit("--start is HH:MM, or `now`")
+    disp = make_display(args)
+
+    def make(i):
+        lesson, times = lessons[i], timings[i]
+        low, high = min(times), max(times)
+        print(f"preparing {lesson.title}: {len(times)} steps, {low if low == high else f'{low}-{high}'} min each "
+              f"({sum(times)} min of drawing)", flush=True)
+        return Frames(lesson, [parts_for(m) for m in times], disp.size, mode_of(args), gamma_of(args)), times
+
+    try:
+        if args.hourly:
+            show_on_time(Hourly(len(lessons), make, start, dt.datetime.now(), args.hours), disp,
+                         full_every=args.full_refresh_every)
+        else:
+            frames, times = make(0)
+            play(frames, disp, start, times, args.full_refresh_every)
+    except KeyboardInterrupt:
+        pass
 
 
 def upload_key_for(args, cache: Path):
@@ -292,7 +367,7 @@ def preview(image, seed, fit_mode, outdir: Path, every: int, look: Look = Look()
 
 def main():
     ap = argparse.ArgumentParser(description="A Day in Lines: a drawing that takes all day.")
-    ap.add_argument("--image", help="image file, or a folder (one picture per day); not needed for `check`")
+    ap.add_argument("--image", help="image file, or a folder (one picture per day); not needed for `check` or `lesson`")
     ap.add_argument("--seed", type=int, default=None, help="fixed seed (default: the date)")
     ap.add_argument("--fit", choices=["crop", "pad"], default="crop", help="fill the sheet, or keep the whole image")
     ap.add_argument("--medium", type=medium_name, default="pencil", metavar="{draw,paint}",
@@ -335,6 +410,25 @@ def main():
     sc.add_argument("--gamma", type=float, default=None)
     sc.add_argument("--mode", choices=MODES, default=None)
     sc.add_argument("--rotate", type=int, choices=(0, 90, 180, 270), default=0)
+    sl = sub.add_parser("lesson", help="draw a step-by-step lesson, then show all its steps together")
+    sl.add_argument("file", nargs="+", help="a lesson file, e.g. lessons/animals/swan.json; with --hourly, several or a folder")
+    sl.add_argument("--check", action="store_true", help="check that every lesson file can be shown, and stop")
+    sl.add_argument("--preview", default=None, metavar="DIR", help="write each step, the progression and a GIF to DIR instead")
+    sl.add_argument("--display", default="file", help="'file', 'waveshare:<module>' or 'inky:auto'")
+    sl.add_argument("--start", default="07:00", metavar="HH:MM|now",
+                    help="when the lesson begins each day (default 07:00); `now` draws it once, straight away")
+    sl.add_argument("--step-minutes", type=int, default=None, metavar="MIN", help=f"minutes for each step (default {STEP_MINUTES})")
+    sl.add_argument("--hourly", action="store_true",
+                    help=f"a drawing every hour from --start: {HOURLY_DRAW_MINUTES} minutes drawing, then all its steps until the next")
+    sl.add_argument("--hours", type=int, default=12, metavar="N", help="with --hourly and a start time, drawings a day (default 12)")
+    sl.add_argument("--draw-minutes", type=int, default=None, metavar="MIN",
+                    help="share this many minutes of drawing over all the steps (instead of --step-minutes)")
+    sl.add_argument("--full-refresh-every", type=int, default=20, help="full (blinking) refresh every N updates; 0 = never")
+    sl.add_argument("--out", default="current.png")
+    sl.add_argument("--size", default="800x480")
+    sl.add_argument("--gamma", type=float, default=None)
+    sl.add_argument("--mode", choices=MODES, default=None)
+    sl.add_argument("--rotate", type=int, choices=(0, 90, 180, 270), default=0)
     sr = sub.add_parser("run", help="drive the display")
     sr.add_argument("--display", default="file",
                     help="'file', 'waveshare:<module>' (e.g. waveshare:epd7in5_V2) or 'inky:auto' (Pimoroni Inky)")
@@ -388,7 +482,7 @@ def main():
     sr.add_argument("--full-refresh-every", type=int, default=20,
                     help="full (blinking) refresh every N updates to clear ghosting (default 20); 0 = never")
     args = ap.parse_args()
-    if args.cmd != "check" and not args.image:
+    if args.cmd not in ("check", "lesson") and not args.image:
         ap.error("--image is required")
     if getattr(args, "update_every", 1) < 1:
         ap.error("--update-every must be at least 1")
@@ -399,6 +493,8 @@ def main():
     seed = args.seed if args.seed is not None else today.toordinal()
     if args.cmd == "run":
         return run(args)
+    if args.cmd == "lesson":
+        return run_lesson(args)
     if args.cmd == "check":
         return check(args)
     if args.cmd == "bake":

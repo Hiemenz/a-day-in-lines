@@ -4,11 +4,11 @@ An e-ink picture for the wall that draws itself. Give it any image, and over a d
 
 There are two paths, chosen with `--medium`: **drawing** (`--medium draw`, or `pencil`, the default) invents pencil marks for any image, as above, and **painting** (`--medium paint`) is for paintings. With `--medium paint`, give it a painting and it starts from a blank canvas and replays that painting stroke by stroke, big slabs of colour first, then smaller strokes, then details, ending on the picture you gave it. See [Painting instead of pencil](#painting-instead-of-pencil).
 
-![The finished sketch](docs/final.png)
+![The finished sketch](docs/images/final.png)
 
-![The day as a timelapse](docs/timelapse.gif)
+![The day as a timelapse](docs/images/timelapse.gif)
 
-The sheet at each hour of the day ([full size](docs/contact_sheet.png)), and the finished frame as the 1-bit panel shows it ([e-ink](docs/final_eink.png)).
+The sheet at each hour of the day ([full size](docs/images/contact_sheet.png)), and the finished frame as the 1-bit panel shows it ([e-ink](docs/images/final_eink.png)).
 
 ## How to run it
 
@@ -45,12 +45,14 @@ python3 a_day_in_lines.py --image ~/pictures run --display waveshare:epd7in5_V2 
 | Path | What it is |
 |---|---|
 | `a_day_in_lines.py` | Launcher: `python3 a_day_in_lines.py ...` runs everything below |
-| `day_in_lines/` | The program, one module per job: `planner` (pencil plan), `paint` (paint plan and renderer), `render` (graphite, dither), `library` (processing and storage), `schedule`, `server`, `submit` (queueing an upload), `slack_app`, `displays`, `feeds`, `export`, `cli` |
+| `day_in_lines/` | The program, one module per job: `planner` (pencil plan), `paint` (paint plan and renderer), `render` (graphite, dither), `library` (processing and storage), `lesson` (step-by-step lessons), `schedule`, `server`, `submit` (queueing an upload), `slack_app`, `displays`, `feeds`, `export`, `cli` |
 | `tests/` | The pytest suite (`python3 -m pytest`) |
 | `day_in_lines/viewer.html` | The viewer page the Pi serves; the program fills in the live drawing |
 | `web/standalone.html` | The same viewer as one offline page with a sample drawing built in. Open it in any browser to break down your own images; no Pi needed (rebuild it with `python web/build_standalone.py` after changing the viewer or planner) |
 | `examples/tanker.png` | Sample image |
-| `docs/` | The images in this README: final sheet, e-ink frame, hourly contact sheet, timelapse, and the same for paint |
+| `lessons/` | Step-by-step lessons as data files, in folders by subject ([index](lessons/README.md)): a swan traced from Lutz, and simpler drawings made for this project |
+| `docs/ideas/` | Ideas for more lessons: 366 subjects, and what is in Lutz's book by page |
+| `docs/images/` | The images in this README: final sheet, e-ink frame, hourly contact sheet, timelapse, and the same for paint |
 | `systemd/day-in-lines.service` | Runs the display at boot |
 | `requirements.txt` | numpy, scipy, Pillow, scikit-image |
 | `requirements-slack.txt` | slack_bolt, only for the Slack channel |
@@ -97,11 +99,79 @@ What it can't do: recover the painter's actual strokes or the order they were ma
 
 Painting needs scikit-image, takes about a minute and 350 MB of memory per picture on a Pi 5, and has no in-browser preview (the page shows the display's own frames instead; `web/standalone.html` is pencil only).
 
-![Paint over a day](docs/paint_contact_sheet.png)
+![Paint over a day](docs/images/paint_contact_sheet.png)
 
 The finished frame as the panel shows it (the sample picture is a grey sketch, so this example is greys and creams):
 
-![Paint, as the panel shows it](docs/paint_final_eink.png)
+![Paint, as the panel shows it](docs/images/paint_final_eink.png)
+
+## Step-by-step lessons
+
+A second way to use the panel: a drawing lesson in the manner of E. G. Lutz's *What to Draw and How to Draw It* (1913). One drawing, as large as the sheet allows and with nothing else on screen, is built up a step at a time; then every step is shown side by side, numbered, with the title and credit. The sample lesson, a swan traced from page 26 and split into 20 steps, takes 1 hour 40 minutes at the default five minutes a step, or any length you give it with `--draw-minutes`.
+
+```bash
+python3 a_day_in_lines.py lesson lessons/animals/swan.json --preview preview/        # each step, the progression and a GIF
+python3 a_day_in_lines.py lesson lessons/animals/swan.json --start now               # try it now, into current.png
+python3 a_day_in_lines.py lesson lessons/animals/swan.json --draw-minutes 55 --start now   # 55 minutes, then all the steps
+export PYTHONPATH=~/e-Paper/RaspberryPi_JetsonNano/python/lib
+python3 a_day_in_lines.py lesson lessons/animals/swan.json --display waveshare:epd7in5_V2 --start now
+```
+
+With `--start now` the lesson is drawn once and the program exits, leaving all the steps on the panel. With `--start HH:MM` (default 07:00) it keeps running, draws the lesson from that time every day and leaves the steps up in between. Started in the middle of a lesson, it joins at the step the clock has reached.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--start` | `07:00` | `HH:MM` for every day, or `now` for once |
+| `--step-minutes` | `5` | Minutes for each step. The step is drawn a part each minute, and its last minute shows it finished |
+| `--draw-minutes` | off | Total drawing time, shared over the steps in whole minutes; later steps get any extra ones. Replaces `--step-minutes`; needs at least a minute a step |
+| `--full-refresh-every` | `20` | A full (blinking) refresh every N updates; the progression always gets one. 0 = no periodic ones |
+| `--hourly` | off | A new drawing every hour (below) |
+| `--hours` | `12` | With `--hourly` and a start time, how many drawings a day |
+| `--preview DIR` | off | Write previews instead of driving a display |
+
+`--display`, `--out`, `--size`, `--mode`, `--gamma` and `--rotate` work as they do for `run`. Only one program can use the panel at a time. Lessons are separate from `run`: the web page, Slack and the picture rotation don't know about them.
+
+### A drawing every hour
+
+```bash
+python3 a_day_in_lines.py lesson lessons/ --hourly --display waveshare:epd7in5_V2 --start 07:00
+```
+
+Each hour has 55 minutes of drawing, then all the steps for the last 5 minutes, then the next drawing starts. By default that is 12 drawings from `--start` (07:00 to 19:00); the last one's steps stay up until the next morning. Give a folder (its subfolders are included) or several files: each hour gets one picked at random, and none comes up again until all have had a turn. A restart carries on with the same picks (adding or removing files reshuffles them). With only one lesson it is drawn again each hour. A file that can't be read is skipped with a message. With `--start now` the hours count from now and carry on round the clock until you stop it. `--draw-minutes` changes the split; the drawing must take under 60 minutes.
+
+### Checking lesson files
+
+```bash
+python3 a_day_in_lines.py lesson lessons/ --check
+```
+
+This draws every lesson without using the panel and lists what is wrong: a file that can't be read, too many steps for the drawing time (`--draw-minutes`, default 55), a step that adds nothing you could see, or a repeated title. It can't tell whether a drawing looks like what it is called; use `--preview` and look.
+
+### Lesson files
+
+A lesson is a JSON file, so a new drawing needs no new code. [`lessons/animals/swan.json`](lessons/animals/swan.json) is a full example.
+
+```json
+{
+  "title": "Tent",
+  "credit": "after E. G. Lutz, 1913",
+  "steps": [
+    [{"line": [[10, 80], [50, 10], [90, 80]]}],
+    [{"line": [[0, 80], [100, 80]]}, {"curve": [[45, 80], [48, 55], [50, 40]]}]
+  ]
+}
+```
+
+Each step is a list of shapes, drawn in the order given and added to the steps before it:
+
+| Shape | What it draws |
+|---|---|
+| `{"line": [[x, y], ...]}` | Straight segments |
+| `{"curve": [[x, y], ...]}` | A smooth curve through every point |
+| `{"circle": [x, y, r]}` | A circle |
+| `{"fill": [[x, y], ...], "gap": 4}` | A patch filled with level strokes; a bigger gap is paler |
+
+Coordinates can be in any units (pixels of a scanned page, say), with y going down. The whole drawing is scaled to fit the sheet. A lesson has 1 to 60 steps; the more there are, the smaller each one is in the progression. `credit` is optional. A file with a mistake in it is refused with a message naming the step and shape.
 
 ## Process once, display from stored results
 
@@ -233,6 +303,7 @@ Global options go before the command: `python3 a_day_in_lines.py --image PATH [-
 | `plan` | Print the schedule with the time of every event (`--start HH:MM`, `--end HH:MM`) |
 | `breakdown` | Exposure sheet, offline viewer and optional per-event frames (`-o`, `--start`, `--end`, `--frames N`) |
 | `check` | Try the display with a test card (`--display`, `--out`, `--size`, `--gamma`, `--mode`, `--rotate`); no `--image` needed |
+| `lesson FILE` | Draw a step-by-step lesson (see Step-by-step lessons); no `--image` needed |
 | `frame K` | Render the sheet after K minutes (`-o file.png`, `--mono` for the 1-bit panel look, `--gamma`) |
 | `prompts` | Text-to-image prompts that scaffold a new picture in this picture's style (`--subject "..."`, `-o file`; see below) |
 | `preview` | Final sheet, e-ink frame, hourly contact sheet and timelapse GIF (`-o dir/`, `--every N`) |
